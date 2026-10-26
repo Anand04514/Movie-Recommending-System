@@ -1,0 +1,33 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Secrets / local config
+.env
+.env.local
+
+# Local database
+*.db
+*.sqlite3
+
+# Data: raw downloads are never committed; processed artifacts are derived
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+*.parquet
+*.npz
+
+# Logs
+*.log
+.download.log
+
+# Node / Vite
+node_modules/
+dist/
+.vite/
+npm-debug.log*
