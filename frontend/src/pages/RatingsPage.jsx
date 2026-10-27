@@ -3,9 +3,29 @@ import { useState } from "react";
 import MovieCard from "../components/MovieCard.jsx";
 import SignInPrompt from "../components/SignInPrompt.jsx";
 
-export default function RatingsPage({ user, ratings, onRate, onRemove, onRequireAuth, onExplore }) {
+function SkeletonCard() {
+  return (
+    <div className="movie-card skeleton" aria-hidden="true">
+      <div className="skeleton-line wide" />
+      <div className="skeleton-line" />
+      <div className="skeleton-line short" />
+    </div>
+  );
+}
+
+export default function RatingsPage({
+  user,
+  ratings,
+  loading = false,
+  error = null,
+  onRate,
+  onRemove,
+  onRequireAuth,
+  onExplore,
+  onRetry,
+}) {
   const [savingId, setSavingId] = useState(null);
-  const [error, setError] = useState(null);
+  const [actionError, setActionError] = useState(null);
 
   if (!user) {
     return (
@@ -24,11 +44,11 @@ export default function RatingsPage({ user, ratings, onRate, onRemove, onRequire
 
   async function rate(movie, value) {
     setSavingId(movie.id);
-    setError(null);
+    setActionError(null);
     try {
       await onRate(movie, value);
     } catch (err) {
-      setError(err.message);
+      setActionError(err.message);
     } finally {
       setSavingId(null);
     }
@@ -36,38 +56,61 @@ export default function RatingsPage({ user, ratings, onRate, onRemove, onRequire
 
   async function remove(movie) {
     setSavingId(movie.id);
-    setError(null);
+    setActionError(null);
     try {
       await onRemove(movie);
     } catch (err) {
-      setError(err.message);
+      setActionError(err.message);
     } finally {
       setSavingId(null);
     }
   }
+
+  const heading =
+    loading || error
+      ? null
+      : ratings.length > 0
+        ? `${ratings.length} ${ratings.length === 1 ? "film" : "films"} rated · average ${average}★`
+        : "Nothing rated yet — your taste graph starts with the first film.";
 
   return (
     <>
       <section className="page-head">
         <p className="eyebrow">Your library</p>
         <h1>My ratings</h1>
-        <p className="lede">
-          {ratings.length > 0
-            ? `${ratings.length} ${ratings.length === 1 ? "film" : "films"} rated · average ${average}★`
-            : "Nothing rated yet — your taste graph starts with the first film."}
+        <p className="lede" role="status">
+          {loading ? "Loading your ratings…" : (heading ?? "\u00a0")}
         </p>
       </section>
 
-      {error ? (
+      {actionError ? (
         <div className="alert" role="alert">
-          {error}
-          <button type="button" onClick={() => setError(null)} aria-label="Dismiss">
+          {actionError}
+          <button type="button" onClick={() => setActionError(null)} aria-label="Dismiss">
             ×
           </button>
         </div>
       ) : null}
 
-      {ratings.length === 0 ? (
+      {error ? (
+        <div className="panel empty" role="alert">
+          <h3>We couldn&apos;t load your ratings.</h3>
+          <p>{error}</p>
+          <button type="button" className="button" onClick={onRetry}>
+            Try again
+          </button>
+        </div>
+      ) : null}
+
+      {!error && loading ? (
+        <div className="movie-grid" aria-busy="true">
+          {Array.from({ length: 3 }, (_, index) => (
+            <SkeletonCard key={index} />
+          ))}
+        </div>
+      ) : null}
+
+      {!error && !loading && ratings.length === 0 ? (
         <div className="panel empty">
           <h3>No ratings yet.</h3>
           <p>Search the catalog and give a few films a score. Half stars are allowed.</p>
@@ -75,7 +118,9 @@ export default function RatingsPage({ user, ratings, onRate, onRemove, onRequire
             Find films to rate
           </button>
         </div>
-      ) : (
+      ) : null}
+
+      {!error && !loading && ratings.length > 0 ? (
         <div className="movie-grid">
           {ratings.map((row) => (
             <MovieCard
@@ -88,7 +133,7 @@ export default function RatingsPage({ user, ratings, onRate, onRemove, onRequire
             />
           ))}
         </div>
-      )}
+      ) : null}
     </>
   );
 }

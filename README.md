@@ -7,10 +7,11 @@ too obscure for the model.
 FastAPI + SQLAlchemy + Alembic backend, React + Vite frontend, and a pure-Python `recsys/` package
 that holds all the data and ML logic (no web or database imports, so it can be tested alone).
 
-**Current status:** Phase 0, Phase 1 (1.1–1.7), and Phase 2 (2.1–2.11) are complete and tested.
-A new user can sign up, search the real catalog, rate films in half-star steps, and see item-based
-recommendations with a reason for every pick. Evaluation metrics, filters, posters, and the
-advanced models arrive in Phases 3–5.
+**Current status:** Phases 0–3 are complete and tested. A new user can sign up, search the real
+catalog, rate films in half-star steps, and see item-based recommendations with a reason for every
+pick — and four algorithms are now measured against each other on a chronological split (see
+[Results](#results)). Filters, richer explanations, posters, and the advanced models arrive in
+Phases 4–5.
 
 ## Quickstart
 
@@ -113,7 +114,13 @@ bounded blocks (a dense item × item matrix is never materialized) and saved to
 k=50 · 22,973 items · 22,013 with neighbors · 2,386,395 nnz · 5.5 MB · 14.2 s
 ```
 
-### 3. `scripts/seed_db.py` — catalog and demo users
+### 3. `scripts/evaluate_models.py` — the head-to-head numbers
+
+Builds (once) and caches `data/processed/user_neighbors.npz` for user-based CF, then scores five
+methods on the same held-out pairs and writes `data/processed/evaluation.json` plus one row per
+method in the `model_runs` table. See [Results](#results).
+
+### 4. `scripts/seed_db.py` — catalog and demo users
 
 The database stores the **catalog** (all 87,585 movies) and **demo users** only; the 32M training
 ratings stay on disk as Parquet and a CSR matrix.
@@ -142,6 +149,49 @@ When nothing survives mean-centering (no ratings, one rating, or ratings that al
 mean), the service falls back to the popularity baseline and reports `cold_start=true`, which is
 what the UI uses to show the onboarding prompt instead of the personalization copy.
 
+## Results
+
+Protocol (`PLAN.md` §9): the **chronological per-user split**, most recent 20% held out; a sample of
+**10,000 users** (seed 42) out of the 18,632 in the model universe; **315,173 held-out ratings**;
+ranking at **k=10** with a held-out rating of **4.0 or higher** counted as relevant. Every method is
+scored on the same pairs; users with no relevant held-out item (234 of the sample) are reported as
+skipped rather than scored as zero. Run on 2026-10-27 with `uv run python scripts/evaluate_models.py`.
+
+| Method | RMSE | MAE | P@10 | R@10 | NDCG@10 | Catalogue coverage |
+| --- | --- | --- | --- | --- | --- | --- |
+| `global_mean` | 1.0625 | 0.8310 | — | — | — | — |
+| `damped_item_mean` | 0.9681 | 0.7434 | 0.0183 | 0.0168 | 0.0203 | 0.17% |
+| `popularity` | 0.9721 | 0.7466 | 0.0566 | 0.0532 | 0.0725 | 0.63% |
+| `item_cf` | **0.9354** | **0.7120** | 0.0791 | 0.0755 | 0.1048 | **18.98%** |
+| `user_cf` | 0.9395 | 0.7137 | **0.0825** | **0.0833** | **0.1082** | 4.68% |
+
+Sample: 9,766 evaluated users per ranking row. Training and evaluation cost, same run:
+
+| Method | Pairs on the item-mean fallback | Evaluation time | Peak traced memory |
+| --- | --- | --- | --- |
+| `global_mean` | — | 0.2 s | 92 MB |
+| `damped_item_mean` | — | 1.4 s | 9 MB |
+| `popularity` | — | 1.8 s | 8 MB |
+| `item_cf` | 26.99% | 5.7 s | 304 MB |
+| `user_cf` | 24.41% | 5.9 s | 294 MB |
+
+Artifact training: item neighbors 14.2 s (5.5 MB), user neighbors 21.0 s (5.3 MB). The whole
+evaluation is a 15 s job on a development subset, which is what makes iterating on models cheap.
+
+What the numbers say:
+
+- **The sanity checks in the plan hold.** Damped item mean beats the global mean (0.9681 vs 1.0625
+  RMSE), and item-CF beats the item mean (0.9354), so the similarity path is not leaking or inverted.
+- **Ratings and ranking disagree about the best method.** User-CF ranks best (NDCG@10 0.1082) while
+  item-CF predicts best (RMSE 0.9354); the gap is small enough that both are worth keeping, which is
+  exactly the comparison Phase 4.3 will put side by side in the UI.
+- **Popularity is a strong ranking baseline** — better than the damped item mean (NDCG@10 0.0725 vs
+  0.0203) — but it recommends almost the same 145 films to everyone (0.63% catalogue coverage),
+  while item-CF covers 18.98%. That is the popularity bias the plan warns about, now measured.
+- **Collaborative methods need support to say anything.** 26.99% of held-out pairs have no
+  neighbor evidence for item-CF (24.41% for user-CF); those pairs fall back to the damped item mean
+  and are reported rather than hidden, so part of item-CF's RMSE win is the baseline it borrows.
+
 ## API
 
 | Method | Path | Auth | Notes |
@@ -160,15 +210,17 @@ what the UI uses to show the onboarding prompt instead of the personalization co
 ## Tests and lint
 
 ```bash
-uv run pytest        # 137 tests: titles, pipeline, recommenders, API (auth, search, ratings, recs)
+uv run pytest        # 164 tests: titles, pipeline, metrics, recommenders, evaluation, API
 uv run ruff check .  # clean
 cd frontend
-npm test             # 19 component tests: half-star widget, cards, recommendations page
+npm test             # 28 component tests: half-star widget, cards, library, picks, session
 npm run build        # production build
 ```
 
 The backend suite runs against SQLite in a temporary directory and never touches a developer's
-database. Frontend tests use Vitest + Testing Library in jsdom and mock the API module.
+database, and the evaluation tests use small synthetic matrices with hand-computed expectations, so
+`uv run pytest` needs no generated artifacts. Frontend tests use Vitest + Testing Library in jsdom
+and mock the API module.
 
 ## Design decisions
 
@@ -178,28 +230,33 @@ database. Frontend tests use Vitest + Testing Library in jsdom and mock the API 
   it stay searchable and ratable.
 - The split is **chronological per user** (most recent 20% is test); the CSR matrix is built from the
   training split only, so evaluation cannot leak.
+- Offline ranking uses **exactly the serving rule** for candidates (positive evidence, rated movies
+  removed), so the reported NDCG describes the lists users actually receive.
+- A collaborative pair with no neighbor support falls back to the damped item mean; the share is
+  published as `fallback_rate` instead of quietly flattering RMSE.
 - Titles are normalized to `Matrix, The (1999)` → title / display `The Matrix` / search `the matrix`,
   so both "the matrix" and "matrix" match. The real catalog contains one year-only title,
   `" (2019)"`, which is preserved instead of crashing ingestion.
 - Search ranks a word-start match above a mid-word one, so `godfather` returns
-  *The Godfather (1972)* first instead of burying it behind `GodFather (1991)` — the article in the
-  normalized title must not cost a film its ranking.
+  *The Godfather (1972)* first instead of burying it behind `GodFather (1991)`.
 - Ratings are validated as half-star steps in 0.5–5.0; `4.2` and `6.0` are both rejected with a
   specific message.
 - Cold start is reported honestly: a popularity list is never described as personalized.
+- A stored session survives a transient API failure — only a token the server actually rejects is
+  discarded, so a network blip does not sign the user out for good.
 
 ## Layout
 
 ```
-recsys/          pure ML/data package (titles, chunked loading, filters, splits, id maps,
-                 baselines, item-item CF)
+recsys/          pure ML/data package: titles, chunked loading, filters, splits, id maps,
+                 baselines, item-item CF, user CF, metrics, evaluation harness
 backend/app/     FastAPI app: settings, database, models, schemas, security, routers
 backend/tests/   API tests (auth, search, ratings, recommendations)
-migrations/      Alembic environment and the initial schema
+migrations/      Alembic environment, initial schema, model_runs table
 frontend/src/    React app: pages, components, api client, component tests
-scripts/         prepare_data.py, train_and_precompute.py, seed_db.py
+scripts/         prepare_data.py, train_and_precompute.py, evaluate_models.py, seed_db.py
 data/raw/        downloaded MovieLens files — never modified or committed
-data/processed/  derived Parquet, CSR matrix, id maps, item neighbors, manifest — never committed
+data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.json — never committed
 tests/           tests for recsys/
 ```
 
@@ -210,19 +267,23 @@ tests/           tests for recsys/
 | 0 | Setup: repo, venv, FastAPI hello-world, Vite shell, PostgreSQL/`pg_trgm`, lint, tests | Done |
 | 1 | Data pipeline: titles, catalog, chunked loading, filters, CSR, chronological split, demo users | Done |
 | 2 | Baselines + item-CF, JWT auth, search, ratings, recommendations with reasons | Done |
-| 3 | Metrics (RMSE, MAE, precision/recall/NDCG), evaluation on the chronological split, `model_runs`, UI polish | Next |
-| 4 | Filters, richer explanations, algorithm comparison, accuracy dashboard, posters | Planned |
+| 3 | Metrics, evaluation on the chronological split, `model_runs`, UI polish, API tests | Done |
+| 4 | Filters, "why this recommendation", algorithm comparison, accuracy dashboard, posters | Next |
 | 5 | SVD + fold-in, content-based, hybrid, serendipity, feedback loop, TMDB ingestion | Planned |
-| 6 | Deployment, README results table, demo recording, release tag | Planned |
+| 6 | Deployment, demo recording, release tag | Planned |
 
 ## Known gaps
 
 - Local development runs on SQLite; the PostgreSQL path (including `pg_trgm` similarity ranking) is
   implemented and enabled at startup but has not been exercised on this machine.
-- No evaluation numbers yet — Phase 3 adds the metrics and the results table.
-- With only a couple of ratings, reasons can all cite the same source film and predicted scores
-  sit close to the user's mean; both improve as the profile grows, and Phase 4/5 add richer
-  explanations, diversity, and the model comparison that make this measurable.
+- One seed, one sample: no confidence intervals, and hyperparameters (`damping`, `k`) are untuned —
+  Phase 3.2's "tune on a validation slice" is not done yet, so the current numbers are honest
+  first-pass measurements, not the best achievable.
+- The relevance cut-off is a plain 4.0+ threshold; graded relevance would reward ranking 5★ above
+  4★ films.
+- With a two-film profile, reasons can all cite the same source film and predicted scores sit close
+  to the user's mean; both improve as the profile grows, and Phase 4/5 add richer explanations,
+  diversity, and the dashboard that makes this measurable in the UI.
 - No posters or movie detail pages; those need the TMDB key from Phase 4.
 
 See [PLAN.md](PLAN.md) for the full development plan and [AGENTS.md](AGENTS.md) for the rules the

@@ -970,6 +970,23 @@ h1 {
   .rating-value {
     min-width: 26px;
   }
+
+  /* Touch targets: a half star is a fifth of the widget, so it needs room to be tappable */
+  .star {
+    width: 30px;
+    height: 32px;
+    font-size: 28px;
+    line-height: 32px;
+  }
+
+  .star-half {
+    top: -6px;
+    bottom: -6px;
+  }
+
+  .nav-link {
+    padding: 11px 14px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

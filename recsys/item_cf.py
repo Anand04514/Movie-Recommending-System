@@ -31,6 +31,23 @@ class ItemNeighbors:
     n_users: int
     min_similarity: float
 
+    def similarity_matrix(self) -> sparse.csr_matrix:
+        """The neighbor table as an items x items CSR matrix holding positive edges only.
+
+        Ranking and rating evaluation multiply whole user blocks with it, which keeps the
+        fold-in vectorized instead of walking each user's list of rated movies.
+        """
+        n_items, k = self.indices.shape
+        rows = np.repeat(np.arange(n_items, dtype="int64"), k)
+        cols = self.indices.reshape(-1).astype("int64")
+        values = self.similarities.reshape(-1).astype("float64")
+        keep = (cols >= 0) & (values > 0)
+        return sparse.csr_matrix(
+            (values[keep], (rows[keep], cols[keep])),
+            shape=(n_items, n_items),
+            dtype="float64",
+        )
+
 
 @dataclass(frozen=True)
 class Recommendation:

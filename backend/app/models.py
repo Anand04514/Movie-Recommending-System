@@ -102,3 +102,25 @@ class Rating(Base):
     movie: Mapped[Movie] = relationship()
 
     __table_args__ = (UniqueConstraint("user_id", "movie_id", name="uq_ratings_user_movie"),)
+
+
+class ModelRun(Base):
+    """One offline evaluation of one method, so results outlive any single README edit.
+
+    ``params`` is a JSON blob holding the sample sizes and settings that are not first-class
+    columns: ``{"k": 10, "damping": 4.0, "coverage": 0.12, "evaluated_users": 10000, ...}``.
+    """
+
+    __tablename__ = "model_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    algorithm: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    params: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    rmse: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mae: Mapped[float | None] = mapped_column(Float, nullable=True)
+    precision_at_k: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recall_at_k: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ndcg_at_k: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trained_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )

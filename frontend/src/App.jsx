@@ -19,6 +19,8 @@ export default function App() {
   const [pendingView, setPendingView] = useState("for-you");
   const [authMessage, setAuthMessage] = useState("");
   const [ratings, setRatings] = useState([]);
+  const [ratingsStatus, setRatingsStatus] = useState({ loading: false, error: null });
+  const [ratingsReloadKey, setRatingsReloadKey] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -34,9 +36,13 @@ export default function App() {
         setUser(profile);
         setCheckingSession(false);
       })
-      .catch(() => {
+      .catch((error) => {
         if (cancelled) return;
-        api.clearToken();
+        // Only a token the server actually rejected is worth discarding. A network blip must not
+        // sign the user out for good, so the credential stays and the next load retries.
+        if (error instanceof api.ApiError && (error.status === 401 || error.status === 403)) {
+          api.clearToken();
+        }
         setCheckingSession(false);
       });
     return () => {
@@ -47,21 +53,27 @@ export default function App() {
   useEffect(() => {
     if (!user) {
       setRatings([]);
+      setRatingsStatus({ loading: false, error: null });
       return undefined;
     }
     let cancelled = false;
+    setRatingsStatus({ loading: true, error: null });
     api
       .listRatings()
       .then((rows) => {
-        if (!cancelled) setRatings(rows);
+        if (cancelled) return;
+        setRatings(rows);
+        setRatingsStatus({ loading: false, error: null });
       })
-      .catch(() => {
-        if (!cancelled) setRatings([]);
+      .catch((error) => {
+        if (cancelled) return;
+        setRatings([]);
+        setRatingsStatus({ loading: false, error: error.message });
       });
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, ratingsReloadKey]);
 
   const ratingsByMovie = useMemo(
     () => new Map(ratings.map((row) => [row.movie.id, row.rating])),
@@ -217,10 +229,13 @@ export default function App() {
           <RatingsPage
             user={user}
             ratings={ratings}
+            loading={ratingsStatus.loading}
+            error={ratingsStatus.error}
             onRate={handleRate}
             onRemove={handleRemove}
             onRequireAuth={openAuth}
             onExplore={explore}
+            onRetry={() => setRatingsReloadKey((key) => key + 1)}
           />
         ) : null}
 
