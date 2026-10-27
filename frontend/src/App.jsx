@@ -1,148 +1,241 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-const NEXT_UP = [
-  {
-    title: "Search everything",
-    body: "Every title in the MovieLens catalog, including recent releases — not just the movies the model was trained on.",
-  },
-  {
-    title: "Rate in half stars",
-    body: "A five-star widget with half-step precision, because MovieLens ratings are not integers.",
-  },
-  {
-    title: "Picks with reasons",
-    body: "Personalized recommendations that say which of your ratings drove them.",
-  },
+import * as api from "./api.js";
+import AuthPage from "./pages/AuthPage.jsx";
+import RatingsPage from "./pages/RatingsPage.jsx";
+import RecommendationsPage from "./pages/RecommendationsPage.jsx";
+import SearchPage from "./pages/SearchPage.jsx";
+
+const NAV = [
+  { id: "discover", label: "Discover" },
+  { id: "for-you", label: "For you" },
+  { id: "ratings", label: "My ratings" },
 ];
 
-function useApiHealth() {
-  const [health, setHealth] = useState({ state: "loading" });
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [checkingSession, setCheckingSession] = useState(() => Boolean(api.getStoredToken()));
+  const [view, setView] = useState("discover");
+  const [pendingView, setPendingView] = useState("for-you");
+  const [authMessage, setAuthMessage] = useState("");
+  const [ratings, setRatings] = useState([]);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const check = useCallback(async (signal) => {
-    setHealth({ state: "loading" });
-    try {
-      const response = await fetch("/api/health", { signal });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.database?.status ?? `HTTP ${response.status}`);
-      }
-      setHealth({ state: "online", payload });
-    } catch (error) {
-      if (error.name !== "AbortError") {
-        setHealth({ state: "offline", message: error.message });
-      }
+  useEffect(() => {
+    if (!api.getStoredToken()) {
+      setCheckingSession(false);
+      return undefined;
     }
+    let cancelled = false;
+    api
+      .getMe()
+      .then((profile) => {
+        if (cancelled) return;
+        setUser(profile);
+        setCheckingSession(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        api.clearToken();
+        setCheckingSession(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    check(controller.signal);
-    return () => controller.abort();
-  }, [check]);
+    if (!user) {
+      setRatings([]);
+      return undefined;
+    }
+    let cancelled = false;
+    api
+      .listRatings()
+      .then((rows) => {
+        if (!cancelled) setRatings(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setRatings([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
-  return [health, () => check()];
-}
-
-function StatusCard({ health, retry }) {
-  const online = health.state === "online";
-  const loading = health.state === "loading";
-  const label = loading ? "Checking the API" : online ? "API connected" : "API offline";
-
-  return (
-    <section className={`status-card ${online ? "is-online" : ""}`}>
-      <div className="status-head">
-        <span className={`dot ${loading ? "is-loading" : ""} ${online ? "is-ok" : ""}`} />
-        <span className="status-label">{label}</span>
-        {health.payload?.version && online && (
-          <span className="status-meta">v{health.payload.version}</span>
-        )}
-      </div>
-
-      {online && (
-        <dl className="status-grid">
-          <div>
-            <dt>Database</dt>
-            <dd>{health.payload.database.dialect}</dd>
-          </div>
-          <div>
-            <dt>Status</dt>
-            <dd>{health.payload.database.status}</dd>
-          </div>
-          <div>
-            <dt>Endpoint</dt>
-            <dd>/api/health</dd>
-          </div>
-        </dl>
-      )}
-
-      {health.state === "offline" && (
-        <div className="status-offline">
-          <p>Start the backend, then try again:</p>
-          <code>uv run uvicorn backend.app.main:app --reload --port 8000</code>
-          <button type="button" onClick={retry}>
-            Retry connection
-          </button>
-        </div>
-      )}
-
-      {loading && <p className="status-note">Waiting for the FastAPI service…</p>}
-    </section>
+  const ratingsByMovie = useMemo(
+    () => new Map(ratings.map((row) => [row.movie.id, row.rating])),
+    [ratings],
   );
-}
 
-export default function App() {
-  const [health, retry] = useApiHealth();
+  const openAuth = useCallback(
+    (message = "Sign in to keep going.", nextView) => {
+      setAuthMessage(message);
+      setPendingView(nextView ?? (view === "auth" ? "for-you" : view));
+      setView("auth");
+    },
+    [view],
+  );
+
+  const navigate = useCallback(
+    (id) => {
+      if ((id === "for-you" || id === "ratings") && !user) {
+        openAuth(
+          id === "for-you"
+            ? "Sign in to see picks made for you."
+            : "Sign in to see your ratings.",
+          id,
+        );
+        return;
+      }
+      setView(id);
+    },
+    [user, openAuth],
+  );
+
+  const handleRate = useCallback(
+    async (movie, value) => {
+      if (!user) {
+        openAuth("Sign in to save your ratings.");
+        return;
+      }
+      const saved = await api.saveRating(movie.id, value);
+      setRatings((previous) => [
+        saved,
+        ...previous.filter((row) => row.movie.id !== movie.id),
+      ]);
+      setRefreshKey((key) => key + 1);
+    },
+    [user, openAuth],
+  );
+
+  const handleRemove = useCallback(async (movie) => {
+    await api.deleteRating(movie.id);
+    setRatings((previous) => previous.filter((row) => row.movie.id !== movie.id));
+    setRefreshKey((key) => key + 1);
+  }, []);
+
+  function handleAuthenticated(profile) {
+    setUser(profile);
+    setAuthMessage("");
+    const next = pendingView ?? "for-you";
+    setPendingView("for-you");
+    setView(next);
+  }
+
+  function signOut() {
+    api.clearToken();
+    setUser(null);
+    setRatings([]);
+    setView("discover");
+  }
+
+  const explore = () => setView("discover");
 
   return (
     <div className="shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Movie Recs home">
+        <button
+          className="brand"
+          type="button"
+          onClick={() => setView("discover")}
+          aria-label="Movie Recs home"
+        >
           <span className="brand-mark" aria-hidden="true">
             <span />
             <span />
             <span />
           </span>
           movie recs
-        </a>
-        <span className="phase">Phase 0 · shell</span>
+        </button>
+
+        <nav className="nav" aria-label="Primary">
+          {NAV.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`nav-link ${view === item.id ? "is-active" : ""}`}
+              aria-current={view === item.id ? "page" : undefined}
+              onClick={() => navigate(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="account">
+          {user ? (
+            <>
+              <button
+                type="button"
+                className="account-name"
+                onClick={() => setView("ratings")}
+                title="Your ratings"
+              >
+                {user.display_name}
+              </button>
+              <button type="button" className="link-button" onClick={signOut}>
+                Sign out
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="button small"
+              onClick={() => openAuth("Sign in to rate films and get picks.", "for-you")}
+            >
+              Sign in
+            </button>
+          )}
+        </div>
       </header>
 
       <main>
-        <section className="hero">
-          <p className="eyebrow">MovieLens ml-32m · 32 million ratings</p>
-          <h1>
-            Find the film
-            <br />
-            you haven&apos;t met yet.
-          </h1>
-          <p className="lede">
-            A full-stack recommender built from 32 million real ratings — searchable catalog,
-            half-star ratings, and picks that explain themselves.
-          </p>
-        </section>
+        {checkingSession ? <p className="page-loading">Restoring your session…</p> : null}
 
-        <StatusCard health={health} retry={retry} />
+        {!checkingSession && view === "discover" ? (
+          <SearchPage
+            user={user}
+            ratingsByMovie={ratingsByMovie}
+            onRate={handleRate}
+            onRequireAuth={openAuth}
+          />
+        ) : null}
 
-        <section className="next">
-          <h2>Next on the reel</h2>
-          <div className="next-grid">
-            {NEXT_UP.map((item, index) => (
-              <article className="next-card" key={item.title}>
-                <span className="next-index">0{index + 1}</span>
-                <h3>{item.title}</h3>
-                <p>{item.body}</p>
-              </article>
-            ))}
-          </div>
-        </section>
+        {!checkingSession && view === "for-you" ? (
+          <RecommendationsPage
+            user={user}
+            refreshKey={refreshKey}
+            ratingsByMovie={ratingsByMovie}
+            onRate={handleRate}
+            onRequireAuth={openAuth}
+            onExplore={explore}
+          />
+        ) : null}
+
+        {!checkingSession && view === "ratings" ? (
+          <RatingsPage
+            user={user}
+            ratings={ratings}
+            onRate={handleRate}
+            onRemove={handleRemove}
+            onRequireAuth={openAuth}
+            onExplore={explore}
+          />
+        ) : null}
+
+        {!checkingSession && view === "auth" ? (
+          <AuthPage
+            message={authMessage}
+            onAuthenticated={handleAuthenticated}
+            onCancel={() => setView("discover")}
+          />
+        ) : null}
       </main>
 
-      <footer>
-        Ratings and titles from the{" "}
-        <a href="https://grouplens.org/datasets/movielens/" target="_blank" rel="noreferrer">
-          MovieLens ml-32m dataset
-        </a>
-        , GroupLens Research. Movie posters via TMDB in a later phase.
+      <footer className="site-footer">
+        <span>Movie Recs — a MovieLens ml-32m project.</span>
+        <span>Ratings and titles from GroupLens Research. Posters via TMDB in a later phase.</span>
       </footer>
     </div>
   );

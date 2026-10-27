@@ -47,5 +47,6 @@ tests/      tests for recsys/
 
 ## Before finishing any task
 
-Run `uv run pytest` and `uv run ruff check .`; both must pass. Commit only after the phase's
-acceptance criteria pass, and never commit files under `data/raw/` or `data/processed/`.
+Run `uv run pytest` and `uv run ruff check .`; both must pass. When the frontend changes, also run
+`cd frontend && npm test` and `npm run build`. Commit only after the phase's acceptance criteria
+pass, and never commit files under `data/raw/` or `data/processed/`.

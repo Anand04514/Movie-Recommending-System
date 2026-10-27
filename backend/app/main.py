@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from backend.app.config import get_settings
 from backend.app.db import database_health, init_database
+from backend.app.routers import auth, movies, ratings, recommendations
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    for router in (auth.router, movies.router, ratings.router, recommendations.router):
+        app.include_router(router)
 
     @app.get("/", tags=["meta"])
     def read_root() -> dict[str, str]:
