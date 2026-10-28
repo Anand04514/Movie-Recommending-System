@@ -7,8 +7,11 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from backend.app.db import get_db
+from backend.app.deps import get_tmdb_client
 from backend.app.models import Movie
 from backend.app.schemas import MovieOut, SearchResponse, movie_to_out, normalized_query_text
+from backend.app.tmdb import TmdbClient
+from recsys.titles import split_genres
 
 router = APIRouter(prefix="/api/movies", tags=["movies"])
 
@@ -62,9 +65,45 @@ def search_movies(
     )
 
 
+@router.get("/genres", response_model=list[str])
+def list_genres(db: Session = Depends(get_db)) -> list[str]:
+    """Every genre label present in the catalog, for the recommendation filter chips."""
+    combinations = db.scalars(select(Movie.genres).distinct()).all()
+    genres: set[str] = set()
+    for combination in combinations:
+        genres.update(split_genres(combination or ""))
+    genres.discard("(no genres listed)")
+    return sorted(genres)
+
+
+def _enrich_from_tmdb(movie: Movie, tmdb: TmdbClient, db: Session) -> None:
+    """Fill a missing poster or overview once, and never let TMDB break the request.
+
+    Only called for a single movie at a time, so a cold cache costs one HTTP call and every later
+    request is served from the local cache (or from the stored columns).
+    """
+    if not tmdb.enabled or movie.poster_path or movie.overview or not movie.tmdb_id:
+        return
+    fetched = tmdb.fetch(movie.tmdb_id)
+    if fetched is None:
+        return
+    if fetched.poster_path:
+        movie.poster_path = fetched.poster_path
+    if fetched.overview:
+        movie.overview = fetched.overview
+    if fetched.poster_path or fetched.overview:
+        db.commit()
+        db.refresh(movie)
+
+
 @router.get("/{movie_id}", response_model=MovieOut)
-def read_movie(movie_id: int, db: Session = Depends(get_db)) -> MovieOut:
+def read_movie(
+    movie_id: int,
+    db: Session = Depends(get_db),
+    tmdb: TmdbClient = Depends(get_tmdb_client),
+) -> MovieOut:
     movie = db.get(Movie, movie_id)
     if movie is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Movie not found.")
+    _enrich_from_tmdb(movie, tmdb, db)
     return movie_to_out(movie)

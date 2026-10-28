@@ -76,8 +76,8 @@ export function searchMovies(query, { limit = 18, signal } = {}) {
   return request(`/movies/search?${params.toString()}`, { signal });
 }
 
-export function getMovie(movieId) {
-  return request(`/movies/${movieId}`);
+export function getMovie(movieId, { signal } = {}) {
+  return request(`/movies/${movieId}`, { signal });
 }
 
 export function signup({ email, displayName, password }) {
@@ -111,8 +111,32 @@ export function deleteRating(movieId) {
   return request(`/ratings/${movieId}`, { method: "DELETE", auth: true });
 }
 
-export function getRecommendations({ limit = 12, signal } = {}) {
-  return request(`/recommend?limit=${limit}`, { auth: true, signal });
+export function getRecommendations({
+  limit = 12,
+  genres = [],
+  yearMin = null,
+  yearMax = null,
+  minScore = null,
+  signal,
+} = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (genres.length > 0) params.set("genres", genres.join(","));
+  if (yearMin != null) params.set("year_min", String(yearMin));
+  if (yearMax != null) params.set("year_max", String(yearMax));
+  if (minScore != null) params.set("min_score", String(minScore));
+  return request(`/recommend?${params.toString()}`, { auth: true, signal });
+}
+
+export function listGenres({ signal } = {}) {
+  return request("/movies/genres", { signal });
+}
+
+export function compareAlgorithms({ limit = 10, signal } = {}) {
+  return request(`/compare?limit=${limit}`, { auth: true, signal });
+}
+
+export function listModelRuns({ signal } = {}) {
+  return request("/model-runs", { signal });
 }
 
 export function getHealth() {

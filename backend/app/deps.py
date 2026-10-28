@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
@@ -9,8 +11,15 @@ from sqlalchemy.orm import Session
 from backend.app.db import get_db
 from backend.app.models import User
 from backend.app.security import decode_access_token
+from backend.app.tmdb import TmdbClient, build_tmdb_client
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+@lru_cache
+def get_tmdb_client() -> TmdbClient:
+    """One client per process, so its cache and request throttle are shared."""
+    return build_tmdb_client()
 
 
 def get_current_user(

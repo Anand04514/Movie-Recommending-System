@@ -1,4 +1,48 @@
+import { useState } from "react";
+
+import MovieDialog from "./MovieDialog.jsx";
 import StarRating from "./StarRating.jsx";
+
+function formatStars(value) {
+  return Number.isInteger(value) ? `${value}★` : `${value.toFixed(1)}★`;
+}
+
+function Poster({ url }) {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) return null;
+  return (
+    <img
+      className="poster"
+      src={url}
+      alt=""
+      width="54"
+      height="81"
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function Evidence({ items }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="evidence">
+      <span className="evidence-label">Also driven by</span>
+      <ul aria-label="Other ratings behind this pick">
+        {items.map((item) => (
+          <li key={item.movie.id}>
+            <span className="evidence-title">{item.movie.title}</span>
+            <span className="evidence-rating">{formatStars(item.rating)}</span>
+            {item.shared_genres?.length > 0 ? (
+              <span className="evidence-genres">{item.shared_genres.slice(0, 2).join(" · ")}</span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 export default function MovieCard({
   movie,
@@ -9,12 +53,27 @@ export default function MovieCard({
   reason,
   predictedRating,
   badge,
+  evidence = [],
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  // The sentence already names the strongest rating; the chips add the runners-up.
+  const secondary = evidence.slice(1, 3);
+
   return (
     <article className={`movie-card ${busy ? "is-busy" : ""}`} aria-busy={busy}>
       <div className="movie-head">
-        <div>
-          <h3>{movie.title}</h3>
+        <Poster key={movie.poster_url} url={movie.poster_url} />
+        <div className="movie-title">
+          <h3>
+            <button
+              type="button"
+              className="title-button"
+              onClick={() => setDetailsOpen(true)}
+              title={`Details for ${movie.title}`}
+            >
+              {movie.title}
+            </button>
+          </h3>
           <p className="movie-meta">
             {movie.release_year ?? "Year unknown"}
             <span aria-hidden="true"> · </span>
@@ -33,15 +92,18 @@ export default function MovieCard({
       )}
 
       {reason ? (
-        <p className="reason">
-          <span className="reason-mark" aria-hidden="true">
-            ↳
-          </span>{" "}
-          {reason}
-          {predictedRating ? (
-            <span className="predicted">Predicted {predictedRating.toFixed(1)}★</span>
-          ) : null}
-        </p>
+        <div className="reason-block">
+          <p className="reason">
+            <span className="reason-mark" aria-hidden="true">
+              ↳
+            </span>{" "}
+            {reason}
+            {predictedRating ? (
+              <span className="predicted">Predicted {predictedRating.toFixed(1)}★</span>
+            ) : null}
+          </p>
+          <Evidence items={secondary} />
+        </div>
       ) : null}
 
       <div className="movie-foot">
@@ -57,6 +119,16 @@ export default function MovieCard({
           </button>
         ) : null}
       </div>
+
+      {detailsOpen ? (
+        <MovieDialog
+          movie={movie}
+          rating={rating}
+          busy={busy}
+          onRate={onRate}
+          onClose={() => setDetailsOpen(false)}
+        />
+      ) : null}
     </article>
   );
 }

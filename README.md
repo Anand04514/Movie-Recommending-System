@@ -7,11 +7,12 @@ too obscure for the model.
 FastAPI + SQLAlchemy + Alembic backend, React + Vite frontend, and a pure-Python `recsys/` package
 that holds all the data and ML logic (no web or database imports, so it can be tested alone).
 
-**Current status:** Phases 0–3 are complete and tested. A new user can sign up, search the real
-catalog, rate films in half-star steps, and see item-based recommendations with a reason for every
-pick — and four algorithms are now measured against each other on a chronological split (see
-[Results](#results)). Filters, richer explanations, posters, and the advanced models arrive in
-Phases 4–5.
+**Current status:** Phases 0–4 are complete and tested. A new user can sign up, search the real
+catalog, rate films in half-star steps, filter their picks by genre, year and predicted score, read
+the ratings behind each recommendation, compare item-based and user-based lists side by side, and
+see every method's offline accuracy charted from the database. Posters and synopses appear
+automatically once a free TMDB key is configured. The advanced models (SVD with fold-in,
+content-based, hybrid) are Phase 5.
 
 ## Quickstart
 
@@ -48,7 +49,11 @@ the demo users.
 | Sign up / sign in | JWT access tokens, bcrypt hashing, session restored from local storage |
 | Search any movie | Trigram (PostgreSQL) or word-boundary prefix ranking (SQLite); all 87,585 titles |
 | Rate films | Half-star widget (0.5–5.0), upsert and delete, "My ratings" library with the average |
-| For you | Item-based CF with a reason line and a damped predicted score per pick |
+| For you | Item-based CF with a reason line, the runner-up ratings behind it, and a damped predicted score |
+| Filters | Genre chips, a release-year range and a minimum predicted rating, applied to a wider scored pool |
+| Compare | Item-CF vs user-CF for the same profile, with picks both lists agree on marked “Both” |
+| Accuracy | RMSE, MAE, precision/recall/NDCG@10 and coverage per method, charted from `model_runs` |
+| Posters and details | Titles open a details dialog; posters and synopses load lazily from TMDB and cache locally |
 | Cold start | Users with no usable signal get the popularity baseline plus an onboarding prompt |
 
 The demo users (`password_hash="!"`, so they can never sign in) exist to give the catalog rating
@@ -143,11 +148,38 @@ ratings in at request time, so **no similarity is ever computed on a request**:
 4. Movies the user already rated are always excluded; candidates need positive evidence, so rating
    something 1★ never *causes* a recommendation.
 5. The reason line names the rated movie with the strongest positive contribution
-   ("Because you rated The Godfather 5★").
+   ("Because you rated The Godfather 5★"); the response also carries the next two contributors with
+   their ratings and shared genres, which the card shows as "Also driven by".
+
+User-based CF is served the same way from a precomputed user-neighbor table: the live user's vector
+is folded in at request time (`recsys.user_cf.recommend_for_folded_user`), and the profile's own
+rated items are excluded inside the function so a caller cannot forget.
 
 When nothing survives mean-centering (no ratings, one rating, or ratings that all equal the user's
 mean), the service falls back to the popularity baseline and reports `cold_start=true`, which is
 what the UI uses to show the onboarding prompt instead of the personalization copy.
+
+## Posters and details
+
+The catalog already carries `tmdbId` from `links.csv`, so a poster is a join, not a second source of
+truth. Without a key the app degrades cleanly: cards render text-only, the details dialog says the
+synopsis is not in the catalog yet, and nothing fails.
+
+1. Request a free key from [TMDB](https://www.themoviedb.org/settings/api) (a v4 read access token is
+   preferred; a v3 API key also works).
+2. Put `TMDB_READ_ACCESS_TOKEN=…` or `TMDB_API_KEY=…` in `.env`.
+3. Optionally warm the cache: `uv run python scripts/fetch_posters.py --limit 500`. The script
+   visits the most-rated films by default and has `--limit`, `--min-rating-count` and `--dry-run`.
+
+Requests are server-side only, throttled to 20/s, retried once on a 429 with `Retry-After`, cached
+as JSON under `data/processed/tmdb_cache/`, and written back to the movie row after the first
+successful lookup. Every failure path returns `None`, so a TMDB outage cannot break search or
+recommendations. TMDB's terms require the attribution in the footer:
+
+> This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+A deployment should also show the TMDB logo per their brand guidelines; local development shows the
+text notice.
 
 ## Results
 
@@ -201,19 +233,22 @@ What the numbers say:
 | `POST` | `/api/auth/login` | – | Same shape as signup |
 | `GET` | `/api/auth/me` | ✔ | Current user profile |
 | `GET` | `/api/movies/search?q=&limit=` | – | Ranked by match tier, then rating count |
-| `GET` | `/api/movies/{id}` | – | Catalog detail |
+| `GET` | `/api/movies/genres` | – | Every genre label in the catalog, for the filter chips |
+| `GET` | `/api/movies/{id}` | – | Catalog detail, enriched from TMDB once when a key is set |
 | `GET` | `/api/ratings` | ✔ | The user's ratings with movie payloads |
 | `POST` | `/api/ratings` | ✔ | Upsert; rejects non-half-star values and out-of-range ratings |
 | `DELETE` | `/api/ratings/{movie_id}` | ✔ | 204 on success, 404 when unrated |
-| `GET` | `/api/recommend?limit=` | ✔ | algorithm, cold_start, items with score/predicted/reason |
+| `GET` | `/api/recommend?limit=&genres=&year_min=&year_max=&min_score=` | ✔ | Picks with score, predicted rating, reason, evidence; `genres` is comma-separated and any match qualifies |
+| `GET` | `/api/compare?limit=&left=&right=` | ✔ | Two algorithms for one profile, with `overlap` ids and `overlap_count` |
+| `GET` | `/api/model-runs?limit=` | – | Latest evaluation per method, newest first |
 
 ## Tests and lint
 
 ```bash
-uv run pytest        # 164 tests: titles, pipeline, metrics, recommenders, evaluation, API
+uv run pytest        # 205 tests: titles, pipeline, metrics, recommenders, fold-in, evaluation, API, TMDB
 uv run ruff check .  # clean
 cd frontend
-npm test             # 28 component tests: half-star widget, cards, library, picks, session
+npm test             # 74 component tests: cards, dialog, stars, filters, picks, compare, dashboard, session
 npm run build        # production build
 ```
 
@@ -244,17 +279,25 @@ and mock the API module.
 - Cold start is reported honestly: a popularity list is never described as personalized.
 - A stored session survives a transient API failure — only a token the server actually rejects is
   discarded, so a network blip does not sign the user out for good.
+- Filters are applied after scoring a wider pool (8× the limit, capped at 200), because the artifacts
+  store neighbours, not metadata. Genre matching is case-insensitive "any of"; year and score are
+  exact. A filtered list that runs dry says so and offers to clear the filters.
+- Only **positive** contributions explain a pick. Rating a film 1★ can legitimately *demote* its
+  neighbours, but the card should never say "because you hated it" as the reason to watch something.
+- The dashboard reads the latest run per algorithm and computes the best value per metric; when the
+  table is empty it shows the command to produce the numbers instead of inventing any.
+- Posters are cosmetic: a failed image hides itself, and a missing key leaves the layout unchanged.
 
 ## Layout
 
 ```
 recsys/          pure ML/data package: titles, chunked loading, filters, splits, id maps,
                  baselines, item-item CF, user CF, metrics, evaluation harness
-backend/app/     FastAPI app: settings, database, models, schemas, security, routers
-backend/tests/   API tests (auth, search, ratings, recommendations)
+backend/app/     FastAPI app: settings, database, models, schemas, security, routers, TMDB client
+backend/tests/   API tests (auth, search, ratings, recommendations, TMDB, poster prefetch)
 migrations/      Alembic environment, initial schema, model_runs table
-frontend/src/    React app: pages, components, api client, component tests
-scripts/         prepare_data.py, train_and_precompute.py, evaluate_models.py, seed_db.py
+frontend/src/    React app: pages (discover, for you, compare, ratings, accuracy), components, api client, tests
+scripts/         prepare_data.py, train_and_precompute.py, evaluate_models.py, seed_db.py, fetch_posters.py
 data/raw/        downloaded MovieLens files — never modified or committed
 data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.json — never committed
 tests/           tests for recsys/
@@ -268,8 +311,8 @@ tests/           tests for recsys/
 | 1 | Data pipeline: titles, catalog, chunked loading, filters, CSR, chronological split, demo users | Done |
 | 2 | Baselines + item-CF, JWT auth, search, ratings, recommendations with reasons | Done |
 | 3 | Metrics, evaluation on the chronological split, `model_runs`, UI polish, API tests | Done |
-| 4 | Filters, "why this recommendation", algorithm comparison, accuracy dashboard, posters | Next |
-| 5 | SVD + fold-in, content-based, hybrid, serendipity, feedback loop, TMDB ingestion | Planned |
+| 4 | Filters, "why this recommendation", algorithm comparison, accuracy dashboard, posters and details | Done |
+| 5 | SVD + fold-in, content-based, hybrid, serendipity, feedback loop, TMDB ingestion | Next |
 | 6 | Deployment, demo recording, release tag | Planned |
 
 ## Known gaps
@@ -282,9 +325,15 @@ tests/           tests for recsys/
 - The relevance cut-off is a plain 4.0+ threshold; graded relevance would reward ranking 5★ above
   4★ films.
 - With a two-film profile, reasons can all cite the same source film and predicted scores sit close
-  to the user's mean; both improve as the profile grows, and Phase 4/5 add richer explanations,
-  diversity, and the dashboard that makes this measurable in the UI.
-- No posters or movie detail pages; those need the TMDB key from Phase 4.
+  to the user's mean; both improve as the profile grows. Diversity and serendipity are Phase 5.
+- No engagement analytics yet: the dashboard reports offline metrics from `model_runs` but not
+  "how often a shown recommendation gets rated or liked", because impressions are not logged. That
+  logging belongs with the Phase 5 feedback loop, where a like/reject action actually exists.
+- Posters and synopses need a TMDB key; this checkout verified the client, cache and fallbacks with
+  mocked responses, and no live TMDB call was made here.
+- The comparison view has the same evidence limit on both sides and no per-user caching; it runs two
+  fold-ins per request and is comfortably fast at development scale, but would need caching before a
+  large public deployment.
 
 See [PLAN.md](PLAN.md) for the full development plan and [AGENTS.md](AGENTS.md) for the rules the
 build follows.

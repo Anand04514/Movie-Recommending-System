@@ -50,13 +50,22 @@ class ItemNeighbors:
 
 
 @dataclass(frozen=True)
+class Contribution:
+    """One of the user's ratings that pushed a recommendation up, with its weight."""
+
+    item_index: int
+    strength: float
+
+
+@dataclass(frozen=True)
 class Recommendation:
-    """One ranked item with its predicted rating and the rating that drove it."""
+    """One ranked item with its predicted rating and the ratings that drove it."""
 
     item_index: int
     score: float
     predicted_rating: float
     source_index: int | None
+    contributions: tuple[Contribution, ...] = ()
 
 
 def mean_center(matrix: sparse.csr_matrix) -> tuple[sparse.csr_matrix, np.ndarray]:
@@ -146,17 +155,23 @@ def recommend_from_ratings(
     limit: int = 10,
     exclude: set[int] | None = None,
     damping: float = 4.0,
+    explain: int = 3,
 ) -> list[Recommendation]:
     """Score candidates from a user's ratings and the precomputed item neighbors.
 
     ``score`` is the sum of ``similarity * (rating - user_mean)`` over the user's rated items;
     ``predicted_rating`` shrinks that toward the user's mean by ``damping`` so a handful of
     neighbors cannot push every prediction to 5.0, then clamps to 0.5-5.0.
+
+    Each recommendation carries its ``explain`` strongest positive contributions, strongest
+    first, so the API can say which of the user's ratings drove a pick.
     """
     if limit < 1:
         raise ValueError("limit must be positive")
     if damping < 0:
         raise ValueError("damping must be non-negative")
+    if explain < 0:
+        raise ValueError("explain must be non-negative")
     rated_indices = np.asarray(rated_indices, dtype="int64")
     rated_values = np.asarray(rated_values, dtype="float64")
     if rated_indices.shape != rated_values.shape:
@@ -173,8 +188,9 @@ def recommend_from_ratings(
     user_mean = float(rated_values.mean())
     scores = np.zeros(n_items, dtype="float64")
     weights = np.zeros(n_items, dtype="float64")
-    strongest = np.full(n_items, -np.inf, dtype="float64")
-    sources = np.full(n_items, -1, dtype="int32")
+    slots = max(explain, 1)
+    top_strengths = np.full((n_items, slots), -np.inf, dtype="float64")
+    top_sources = np.full((n_items, slots), -1, dtype="int32")
 
     for source, rating in zip(rated_indices, rated_values, strict=True):
         source = int(source)
@@ -193,13 +209,30 @@ def recommend_from_ratings(
         np.add.at(weights, targets, sims)
 
         # Only positive contributions explain a recommendation; rating something 1-star is not
-        # a sensible reason to recommend a similar movie.
+        # a sensible reason to recommend a similar movie. Insert them into per-candidate slots
+        # (an insertion sort, vectorized one source at a time) and keep the strongest few.
         strength = sims * centered
-        better = (strength > 0) & (strength > strongest[targets])
-        if better.any():
-            chosen = targets[better]
-            strongest[chosen] = strength[better]
-            sources[chosen] = source
+        active = strength > 0
+        if not active.any():
+            continue
+        candidates = targets[active]
+        values = strength[active]
+        pending = np.arange(candidates.size)
+        for slot in range(slots):
+            if pending.size == 0:
+                break
+            rows = candidates[pending]
+            better = values[pending] > top_strengths[rows, slot]
+            if not better.any():
+                continue
+            chosen = pending[better]
+            rows = candidates[chosen]
+            for shift in range(slots - 1, slot, -1):
+                top_strengths[rows, shift] = top_strengths[rows, shift - 1]
+                top_sources[rows, shift] = top_sources[rows, shift - 1]
+            top_strengths[rows, slot] = values[chosen]
+            top_sources[rows, slot] = source
+            pending = pending[~better]
 
     candidates = (scores > 0) & (weights > 0)
     if blocked:
@@ -218,15 +251,24 @@ def recommend_from_ratings(
     )
     order = np.lexsort((candidate_indices, -scores[candidate_indices]))[:limit]
     chosen = candidate_indices[order]
-    return [
-        Recommendation(
-            item_index=int(index),
-            score=float(scores[index]),
-            predicted_rating=float(predicted[order[i]]),
-            source_index=int(sources[index]) if sources[index] >= 0 else None,
+    results: list[Recommendation] = []
+    for i, index in enumerate(chosen):
+        slots = list(zip(top_sources[index], top_strengths[index], strict=True))[:explain]
+        contributions = tuple(
+            Contribution(item_index=int(origin), strength=float(value))
+            for origin, value in slots
+            if origin >= 0 and value > 0
         )
-        for i, index in enumerate(chosen)
-    ]
+        results.append(
+            Recommendation(
+                item_index=int(index),
+                score=float(scores[index]),
+                predicted_rating=float(predicted[order[i]]),
+                source_index=contributions[0].item_index if contributions else None,
+                contributions=contributions,
+            )
+        )
+    return results
 
 
 def popularity_recommendations(

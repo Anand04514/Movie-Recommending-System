@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.app.models import Movie
+from backend.app.models import ModelRun, Movie
+from backend.app.tmdb import poster_url
 from recsys.titles import normalize_for_search, split_genres
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -73,6 +75,7 @@ class MovieOut(BaseModel):
     rating_count: int
     in_model: bool
     poster_path: str | None = None
+    poster_url: str | None = None
     overview: str | None = None
 
 
@@ -85,6 +88,7 @@ def movie_to_out(movie: Movie) -> MovieOut:
         rating_count=movie.rating_count,
         in_model=movie.in_model,
         poster_path=movie.poster_path,
+        poster_url=poster_url(movie.poster_path),
         overview=movie.overview,
     )
 
@@ -109,17 +113,63 @@ class RatingOut(BaseModel):
     updated_at: datetime
 
 
+class RecommendationEvidence(BaseModel):
+    """One of the user's own ratings that pushed a recommendation up, and why it relates."""
+
+    movie: MovieOut
+    rating: float
+    strength: float
+    shared_genres: list[str]
+
+
 class RecommendationOut(BaseModel):
     movie: MovieOut
     score: float
     predicted_rating: float
     reason: str
+    evidence: list[RecommendationEvidence] = []
+    neighbors_rated: int | None = None
+
+
+class RecommendationFiltersApplied(BaseModel):
+    genres: list[str] = []
+    year_min: int | None = None
+    year_max: int | None = None
+    min_score: float | None = None
 
 
 class RecommendationResponse(BaseModel):
-    algorithm: Literal["item_cf", "popularity"]
+    algorithm: Literal["item_cf", "user_cf", "popularity"]
+    cold_start: bool
+    filters: RecommendationFiltersApplied
+    candidates_considered: int
+    recommendations: list[RecommendationOut]
+
+
+class AlgorithmComparison(BaseModel):
+    algorithm: Literal["item_cf", "user_cf", "popularity"]
     cold_start: bool
     recommendations: list[RecommendationOut]
+
+
+class ComparisonResponse(BaseModel):
+    limit: int
+    left: AlgorithmComparison
+    right: AlgorithmComparison
+    overlap: list[int]
+    overlap_count: int
+
+
+class ModelRunOut(BaseModel):
+    id: int
+    algorithm: str
+    params: dict[str, Any]
+    rmse: float | None
+    mae: float | None
+    precision_at_k: float | None
+    recall_at_k: float | None
+    ndcg_at_k: float | None
+    trained_at: datetime
 
 
 class SearchResponse(BaseModel):
@@ -132,3 +182,24 @@ class SearchResponse(BaseModel):
 def normalized_query_text(query: str) -> str:
     """The same normalization stored in ``movies.title_search``, applied to user input."""
     return normalize_for_search(query)
+
+
+def model_run_to_out(run: ModelRun) -> ModelRunOut:
+    """The stored row with its JSON settings parsed back into a mapping."""
+    try:
+        params: dict[str, Any] = json.loads(run.params)
+        if not isinstance(params, dict):
+            params = {}
+    except (TypeError, json.JSONDecodeError):
+        params = {}
+    return ModelRunOut(
+        id=run.id,
+        algorithm=run.algorithm,
+        params=params,
+        rmse=run.rmse,
+        mae=run.mae,
+        precision_at_k=run.precision_at_k,
+        recall_at_k=run.recall_at_k,
+        ndcg_at_k=run.ndcg_at_k,
+        trained_at=run.trained_at,
+    )

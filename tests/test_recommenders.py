@@ -166,3 +166,39 @@ def test_neighbors_roundtrip_through_disk(tmp_path: Path) -> None:
 def test_load_neighbors_explains_missing_artifacts(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="train_and_precompute"):
         load_neighbors(tmp_path / "missing.npz")
+
+
+def test_recommendations_carry_ranked_contributions() -> None:
+    neighbors = build_item_neighbors(build_matrix(), k=3, block_size=2)
+    recs = recommend_from_ratings(
+        neighbors,
+        rated_indices=np.array([0, 2]),
+        rated_values=np.array([5.0, 1.0]),
+        limit=3,
+        explain=2,
+    )
+
+    assert recs
+    for rec in recs:
+        assert rec.contributions, "a recommendation must explain itself"
+        strengths = [contribution.strength for contribution in rec.contributions]
+        assert strengths == sorted(strengths, reverse=True)
+        assert all(contribution.strength > 0 for contribution in rec.contributions)
+        assert all(contribution.item_index in (0, 2) for contribution in rec.contributions)
+        assert len(rec.contributions) <= 2
+        assert rec.source_index == rec.contributions[0].item_index
+
+
+def test_explain_controls_how_much_evidence_is_returned() -> None:
+    neighbors = build_item_neighbors(build_matrix(), k=3, block_size=2)
+    rated = np.array([0, 2])
+    values = np.array([5.0, 1.0])
+
+    single = recommend_from_ratings(neighbors, rated, values, limit=2, explain=1)
+    assert all(len(rec.contributions) == 1 for rec in single)
+
+    none = recommend_from_ratings(neighbors, rated, values, limit=2, explain=0)
+    assert all(rec.contributions == () and rec.source_index is None for rec in none)
+
+    with pytest.raises(ValueError, match="explain must be non-negative"):
+        recommend_from_ratings(neighbors, rated, values, explain=-1)

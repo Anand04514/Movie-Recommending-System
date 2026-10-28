@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api.js", () => ({
   getRecommendations: vi.fn(),
+  listGenres: vi.fn(),
 }));
 
 import * as api from "../api.js";
@@ -22,6 +23,32 @@ const PICK = {
   score: 3.42,
   predicted_rating: 4.8,
   reason: "Because you rated Heat 5★",
+  evidence: [
+    {
+      movie: {
+        id: 949,
+        title: "Heat",
+        release_year: 1995,
+        rating_count: 1200,
+        genres: ["Action", "Crime"],
+      },
+      rating: 5,
+      strength: 1.2,
+      shared_genres: ["Action"],
+    },
+    {
+      movie: {
+        id: 27205,
+        title: "Inception",
+        release_year: 2010,
+        rating_count: 900,
+        genres: ["Action", "Sci-Fi"],
+      },
+      rating: 4.5,
+      strength: 0.8,
+      shared_genres: ["Action", "Sci-Fi"],
+    },
+  ],
 };
 
 function buildProps(overrides = {}) {
@@ -42,10 +69,22 @@ function renderPage(overrides = {}) {
   return props;
 }
 
+function emptyResponse() {
+  return {
+    algorithm: "item_cf",
+    cold_start: false,
+    filters: {},
+    candidates_considered: 0,
+    recommendations: [],
+  };
+}
+
 function respond({ algorithm = "item_cf", coldStart = false, recommendations = [PICK] } = {}) {
   api.getRecommendations.mockResolvedValue({
     algorithm,
     cold_start: coldStart,
+    filters: {},
+    candidates_considered: 24,
     recommendations,
   });
 }
@@ -53,6 +92,7 @@ function respond({ algorithm = "item_cf", coldStart = false, recommendations = [
 describe("RecommendationsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.listGenres.mockResolvedValue(["Action", "Drama", "Sci-Fi"]);
   });
 
   it("asks signed-out visitors to sign in instead of fetching picks", async () => {
@@ -93,6 +133,19 @@ describe("RecommendationsPage", () => {
     expect(screen.queryByRole("heading", { name: /this is the crowd/i })).not.toBeInTheDocument();
   });
 
+  it("shows the runner-up ratings behind a pick", async () => {
+    respond();
+    renderPage();
+
+    expect(await screen.findByText("Also driven by")).toBeInTheDocument();
+    const evidence = screen.getByRole("list", { name: "Other ratings behind this pick" });
+    expect(within(evidence).getByText("Inception")).toBeInTheDocument();
+    expect(within(evidence).getByText("4.5★")).toBeInTheDocument();
+    expect(within(evidence).getByText("Action · Sci-Fi")).toBeInTheDocument();
+    // The reason already names the strongest rating, so it is not repeated as a chip.
+    expect(within(evidence).queryAllByRole("listitem")).toHaveLength(1);
+  });
+
   it("sends the clicked half-star rating for a recommended movie", async () => {
     const user = userEvent.setup();
     respond();
@@ -123,6 +176,8 @@ describe("RecommendationsPage", () => {
       .mockResolvedValueOnce({
         algorithm: "item_cf",
         cold_start: false,
+        filters: {},
+        candidates_considered: 10,
         recommendations: [PICK],
       });
     renderPage();
@@ -143,5 +198,79 @@ describe("RecommendationsPage", () => {
     rerender(<RecommendationsPage {...props} refreshKey={1} />);
 
     await waitFor(() => expect(api.getRecommendations).toHaveBeenCalledTimes(2));
+  });
+
+  it("turns a genre chip into a filtered request", async () => {
+    const user = userEvent.setup();
+    respond();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "The Matrix" });
+    await user.click(screen.getByRole("button", { name: "Drama" }));
+
+    await waitFor(() =>
+      expect(api.getRecommendations).toHaveBeenLastCalledWith(
+        expect.objectContaining({ genres: ["Drama"], yearMin: null, yearMax: null, minScore: null }),
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Drama" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Reset" })).toBeInTheDocument();
+  });
+
+  it("sends the year range and minimum predicted score", async () => {
+    respond();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "The Matrix" });
+    fireEvent.change(screen.getByLabelText("Earliest release year"), {
+      target: { value: "1990" },
+    });
+    fireEvent.change(screen.getByLabelText("Latest release year"), { target: { value: "2005" } });
+    fireEvent.change(screen.getByRole("slider", { name: "Minimum predicted rating" }), {
+      target: { value: "4" },
+    });
+
+    await waitFor(() =>
+      expect(api.getRecommendations).toHaveBeenLastCalledWith(
+        expect.objectContaining({ yearMin: 1990, yearMax: 2005, minScore: 4 }),
+      ),
+    );
+  });
+
+  it("keeps the last list and explains an impossible year range", async () => {
+    respond();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "The Matrix" });
+    fireEvent.change(screen.getByLabelText("Earliest release year"), {
+      target: { value: "2000" },
+    });
+    fireEvent.change(screen.getByLabelText("Latest release year"), { target: { value: "1990" } });
+
+    expect(await screen.findByText("The first year must come before the second.")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "The Matrix" })).toBeInTheDocument();
+    expect(api.getRecommendations).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a way out when the filters exclude every candidate", async () => {
+    const user = userEvent.setup();
+    api.getRecommendations.mockResolvedValue(emptyResponse());
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "Nothing left to suggest." }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Drama" }));
+    expect(
+      await screen.findByRole("heading", { name: "No picks match those filters." }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() =>
+      expect(api.getRecommendations).toHaveBeenLastCalledWith(
+        expect.objectContaining({ genres: [], yearMin: null, yearMax: null, minScore: null }),
+      ),
+    );
   });
 });

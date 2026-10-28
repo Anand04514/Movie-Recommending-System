@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
 
+    # TMDB (posters and overviews). Either credential enables it; with neither, the app simply
+    # renders without posters. The v4 read access token is the preferred one.
+    tmdb_api_key: str = ""
+    tmdb_read_access_token: str = ""
+    tmdb_poster_size: str = "w342"
+    tmdb_cache_dir: str = "data/processed/tmdb_cache"
+
 
 @lru_cache
 def get_settings() -> Settings:

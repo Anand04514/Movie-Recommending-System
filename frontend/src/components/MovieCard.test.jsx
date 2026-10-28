@@ -1,7 +1,12 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../api.js", () => ({
+  getMovie: vi.fn(),
+}));
+
+import * as api from "../api.js";
 import MovieCard from "./MovieCard.jsx";
 
 const MOVIE = {
@@ -13,6 +18,10 @@ const MOVIE = {
 };
 
 describe("MovieCard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("renders the title, year, rating count, and at most three genres", () => {
     render(<MovieCard movie={MOVIE} />);
 
@@ -77,5 +86,77 @@ describe("MovieCard", () => {
 
     expect(screen.getByRole("article")).toHaveAttribute("aria-busy", "true");
     expect(screen.getAllByRole("radio").every((radio) => radio.disabled)).toBe(true);
+  });
+
+  it("opens full details from the title", async () => {
+    const user = userEvent.setup();
+    api.getMovie.mockResolvedValue({
+      ...MOVIE,
+      overview: "A hacker learns the world is a simulation.",
+      poster_url: null,
+    });
+    render(<MovieCard movie={MOVIE} onRate={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "The Matrix" }));
+
+    expect(
+      await screen.findByText("A hacker learns the world is a simulation."),
+    ).toBeInTheDocument();
+    expect(api.getMovie).toHaveBeenCalledWith(MOVIE.id, expect.anything());
+  });
+
+  it("shows the TMDB poster when the catalog has one", () => {
+    const poster = "https://image.tmdb.org/t/p/w342/matrix.jpg";
+    const { container } = render(<MovieCard movie={{ ...MOVIE, poster_url: poster }} />);
+
+    const image = container.querySelector("img.poster");
+    expect(image).toHaveAttribute("src", poster);
+    expect(image).toHaveAttribute("loading", "lazy");
+    expect(image).toHaveAttribute("alt", "");
+  });
+
+  it("drops a poster that fails to load instead of showing a broken image", () => {
+    const { container } = render(
+      <MovieCard movie={{ ...MOVIE, poster_url: "https://image.tmdb.org/t/p/w342/missing.jpg" }} />,
+    );
+
+    fireEvent.error(container.querySelector("img.poster"));
+    expect(container.querySelector("img.poster")).toBeNull();
+    expect(screen.getByRole("heading", { name: "The Matrix" })).toBeInTheDocument();
+  });
+
+  it("renders no poster element when the movie has no artwork", () => {
+    const { container } = render(<MovieCard movie={MOVIE} />);
+
+    expect(container.querySelector("img.poster")).toBeNull();
+  });
+
+  it("lists the runner-up ratings behind a recommendation", () => {
+    const heat = { ...MOVIE, id: 949, title: "Heat" };
+    const inception = { ...MOVIE, id: 27205, title: "Inception" };
+    render(
+      <MovieCard
+        movie={MOVIE}
+        reason="Because you rated Heat 5★"
+        evidence={[
+          { movie: heat, rating: 5, strength: 1.2, shared_genres: ["Action", "Crime"] },
+          { movie: inception, rating: 4.5, strength: 0.8, shared_genres: ["Sci-Fi"] },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Also driven by")).toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "Other ratings behind this pick" });
+    expect(within(list).getByText("Inception")).toBeInTheDocument();
+    expect(within(list).getByText("4.5★")).toBeInTheDocument();
+    expect(within(list).getByText("Sci-Fi")).toBeInTheDocument();
+    // Heat is already named in the reason, so it is not repeated as a chip.
+    expect(within(list).queryByText("Heat")).not.toBeInTheDocument();
+  });
+
+  it("omits the evidence block when nothing else drove the pick", () => {
+    render(<MovieCard movie={MOVIE} reason="Popular with MovieLens users" evidence={[]} />);
+
+    expect(screen.queryByText("Also driven by")).not.toBeInTheDocument();
   });
 });

@@ -71,6 +71,9 @@ def add_movies() -> Callable[..., list[int]]:
                     genres=spec.get("genres", "Drama"),
                     rating_count=spec.get("rating_count", 0),
                     in_model=spec.get("in_model", True),
+                    tmdb_id=spec.get("tmdb_id"),
+                    poster_path=spec.get("poster_path"),
+                    overview=spec.get("overview"),
                 )
             )
         with get_session_factory()() as session:

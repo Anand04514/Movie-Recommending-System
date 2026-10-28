@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import * as api from "./api.js";
+import AccuracyPage from "./pages/AccuracyPage.jsx";
 import AuthPage from "./pages/AuthPage.jsx";
+import ComparePage from "./pages/ComparePage.jsx";
 import RatingsPage from "./pages/RatingsPage.jsx";
 import RecommendationsPage from "./pages/RecommendationsPage.jsx";
 import SearchPage from "./pages/SearchPage.jsx";
@@ -9,8 +11,12 @@ import SearchPage from "./pages/SearchPage.jsx";
 const NAV = [
   { id: "discover", label: "Discover" },
   { id: "for-you", label: "For you" },
+  { id: "compare", label: "Compare" },
   { id: "ratings", label: "My ratings" },
+  { id: "accuracy", label: "Accuracy" },
 ];
+// Only the pages built on your own ratings require an account.
+const PRIVATE_VIEWS = new Set(["for-you", "ratings", "compare"]);
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -91,13 +97,14 @@ export default function App() {
 
   const navigate = useCallback(
     (id) => {
-      if ((id === "for-you" || id === "ratings") && !user) {
-        openAuth(
+      if (PRIVATE_VIEWS.has(id) && !user) {
+        const message =
           id === "for-you"
             ? "Sign in to see picks made for you."
-            : "Sign in to see your ratings.",
-          id,
-        );
+            : id === "ratings"
+              ? "Sign in to see your ratings."
+              : "Sign in to compare algorithms made for you.";
+        openAuth(message, id);
         return;
       }
       setView(id);
@@ -225,6 +232,16 @@ export default function App() {
           />
         ) : null}
 
+        {!checkingSession && view === "compare" ? (
+          <ComparePage
+            user={user}
+            onRequireAuth={openAuth}
+            onExplore={explore}
+          />
+        ) : null}
+
+        {!checkingSession && view === "accuracy" ? <AccuracyPage /> : null}
+
         {!checkingSession && view === "ratings" ? (
           <RatingsPage
             user={user}
@@ -250,7 +267,10 @@ export default function App() {
 
       <footer className="site-footer">
         <span>Movie Recs — a MovieLens ml-32m project.</span>
-        <span>Ratings and titles from GroupLens Research. Posters via TMDB in a later phase.</span>
+        <span>
+          Ratings and titles from GroupLens Research. This product uses the TMDB API but is not
+          endorsed or certified by TMDB.
+        </span>
       </footer>
     </div>
   );
