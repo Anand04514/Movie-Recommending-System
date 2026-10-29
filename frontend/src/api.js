@@ -160,6 +160,10 @@ export function listModelRuns({ signal } = {}) {
   return request("/model-runs", { signal });
 }
 
+export function listExperiments({ signal } = {}) {
+  return request("/experiments", { signal });
+}
+
 export function getHealth() {
   return request("/health");
 }

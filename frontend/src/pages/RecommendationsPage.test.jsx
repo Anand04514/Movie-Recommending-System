@@ -86,6 +86,9 @@ function respond({
   coldStart = false,
   recommendations = [PICK],
   needsOnboarding = false,
+  experiment = null,
+  variant = null,
+  cached = false,
 } = {}) {
   api.getRecommendations.mockResolvedValue({
     algorithm,
@@ -93,6 +96,9 @@ function respond({
     needs_onboarding: needsOnboarding,
     filters: {},
     candidates_considered: 24,
+    experiment,
+    variant,
+    cached,
     recommendations,
   });
 }
@@ -131,17 +137,30 @@ describe("RecommendationsPage", () => {
     expect(api.getRecommendations).toHaveBeenCalledTimes(1);
   });
 
-  it("asks for the hybrid model by default and labels the response", async () => {
-    respond();
+  it("leaves the default model to the experiment and labels what answered", async () => {
+    respond({ experiment: "default_model_v1", variant: "item_cf" });
     renderPage();
 
     expect(await screen.findByText("Item-based collaborative filtering")).toBeInTheDocument();
+    // No algorithm is requested, so the server-side A/B assignment decides.
     expect(api.getRecommendations).toHaveBeenCalledWith(
-      expect.objectContaining({ algorithm: "hybrid" }),
+      expect.objectContaining({ algorithm: null }),
     );
+    expect(screen.getByText("A/B arm · item_cf")).toBeInTheDocument();
     expect(screen.getByText(/Because you rated Heat 5★/)).toBeInTheDocument();
     expect(screen.getByText("Predicted 4.8★")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /this is the crowd/i })).not.toBeInTheDocument();
+  });
+
+  it("shows no arm badge when the user picked the model themselves", async () => {
+    respond({ algorithm: "user_cf" });
+    renderPage();
+
+    expect(await screen.findByText("User-based collaborative filtering")).toBeInTheDocument();
+    expect(screen.queryByText(/A\/B arm/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "Recommendation model" }),
+    ).toHaveValue("user_cf");
   });
 
   it("switches model without changing the filters", async () => {

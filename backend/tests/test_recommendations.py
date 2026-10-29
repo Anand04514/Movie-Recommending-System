@@ -141,10 +141,14 @@ def test_recommend_endpoint_serves_item_cf_with_reasons(
         )
         assert saved.status_code == 200
 
-    response = client.get("/api/recommend", params={"limit": 5}, headers=headers)
+    response = client.get(
+        "/api/recommend", params={"algorithm": "item_cf", "limit": 5}, headers=headers
+    )
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["algorithm"] == "item_cf"
+    # An explicit choice is not A/B traffic, so it carries no arm.
+    assert body["experiment"] is None and body["variant"] is None
     assert body["cold_start"] is False
     assert body["recommendations"]
     for recommendation in body["recommendations"]:
@@ -162,7 +166,9 @@ def test_recommend_endpoint_cold_start(
     add_movies(*MOVIES)
     headers, _ = signup(email="new@example.com")
 
-    response = client.get("/api/recommend", params={"limit": 4}, headers=headers)
+    response = client.get(
+        "/api/recommend", params={"algorithm": "item_cf", "limit": 4}, headers=headers
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["algorithm"] == "popularity"
@@ -185,7 +191,9 @@ def test_missing_artifacts_return_503(
     )
     try:
         headers, _ = signup()
-        response = client.get("/api/recommend", headers=headers)
+        response = client.get(
+            "/api/recommend", params={"algorithm": "item_cf"}, headers=headers
+        )
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 503

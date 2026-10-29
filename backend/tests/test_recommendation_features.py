@@ -55,6 +55,10 @@ MOVIES: list[dict[str, Any]] = [
 # One training user's own taste profile, so the API user really has something to fold in.
 RATED = ((10, 5.0), (11, 4.0), (12, 1.0), (13, 1.0))
 
+# These tests exercise the item-CF path, so they name it instead of relying on the
+# experiment default (which is a different model on purpose).
+ITEM = {"algorithm": "item_cf"}
+
 
 def write_artifacts(directory: Path) -> None:
     matrix = sparse.csr_matrix(MATRIX)
@@ -93,7 +97,7 @@ def test_unfiltered_recommendations_come_from_the_users_taste_group(
     client: TestClient, customer, recommender: None
 ) -> None:
     headers, _ = customer
-    body = client.get("/api/recommend", params={"limit": 5}, headers=headers).json()
+    body = client.get("/api/recommend", params={**ITEM, "limit": 5}, headers=headers).json()
 
     assert body["algorithm"] == "item_cf"
     assert body["cold_start"] is False
@@ -114,7 +118,7 @@ def test_every_pick_explains_itself_from_the_users_own_ratings(
     client: TestClient, customer, recommender: None
 ) -> None:
     headers, _ = customer
-    body = client.get("/api/recommend", params={"limit": 5}, headers=headers).json()
+    body = client.get("/api/recommend", params={**ITEM, "limit": 5}, headers=headers).json()
     pick = body["recommendations"][0]
 
     evidence = pick["evidence"]
@@ -186,19 +190,19 @@ def test_genre_filter_widens_the_pool_instead_of_truncating_it(
 ) -> None:
     headers, _ = customer
 
-    top_one = client.get("/api/recommend", params={"limit": 1}, headers=headers).json()
+    top_one = client.get("/api/recommend", params={**ITEM, "limit": 1}, headers=headers).json()
     assert [item["movie"]["title"] for item in top_one["recommendations"]] == ["Epsilon"]
 
     # Epsilon outranks Zeta for this user, so filtering *after* truncating to the page size would
     # return nothing here: the service has to score a wider pool than the page it returns.
     comedy = client.get(
-        "/api/recommend", params={"limit": 1, "genres": "Comedy"}, headers=headers
+        "/api/recommend", params={**ITEM, "limit": 1, "genres": "Comedy"}, headers=headers
     ).json()
     assert [item["movie"]["title"] for item in comedy["recommendations"]] == ["Zeta"]
     assert comedy["filters"]["genres"] == ["Comedy"]
 
     horror = client.get(
-        "/api/recommend", params={"limit": 5, "genres": "horror"}, headers=headers
+        "/api/recommend", params={**ITEM, "limit": 5, "genres": "horror"}, headers=headers
     ).json()
     assert horror["recommendations"] == []
 
@@ -207,25 +211,27 @@ def test_year_and_score_filters_apply(client: TestClient, customer, recommender:
     headers, _ = customer
 
     recent = client.get(
-        "/api/recommend", params={"limit": 5, "year_min": 2005}, headers=headers
+        "/api/recommend", params={**ITEM, "limit": 5, "year_min": 2005}, headers=headers
     ).json()
     assert recent["recommendations"] == []  # nothing above the group's taste is that new
 
     classic = client.get(
-        "/api/recommend", params={"limit": 5, "year_min": 1985, "year_max": 1992}, headers=headers
+        "/api/recommend",
+        params={**ITEM, "limit": 5, "year_min": 1985, "year_max": 1992},
+        headers=headers,
     ).json()
     assert [item["movie"]["title"] for item in classic["recommendations"]] == ["Epsilon"]
 
     # The threshold is compared against the served predicted rating, so calibrate on it rather
     # than guessing a number: a hair below keeps the pick, a hair above drops it.
-    first = client.get("/api/recommend", params={"limit": 5}, headers=headers).json()[
+    first = client.get("/api/recommend", params={**ITEM, "limit": 5}, headers=headers).json()[
         "recommendations"
     ][0]
     predicted = first["predicted_rating"]
 
     def ids(min_score: float) -> set[int]:
         body = client.get(
-            "/api/recommend", params={"limit": 5, "min_score": min_score}, headers=headers
+            "/api/recommend", params={**ITEM, "limit": 5, "min_score": min_score}, headers=headers
         ).json()
         return {item["movie"]["id"] for item in body["recommendations"]}
 
@@ -234,7 +240,7 @@ def test_year_and_score_filters_apply(client: TestClient, customer, recommender:
 
     combined = client.get(
         "/api/recommend",
-        params={"limit": 5, "genres": "Comedy", "year_min": 1990, "year_max": 2000},
+        params={**ITEM, "limit": 5, "genres": "Comedy", "year_min": 1990, "year_max": 2000},
         headers=headers,
     ).json()
     assert [item["movie"]["title"] for item in combined["recommendations"]] == ["Zeta"]
@@ -245,13 +251,19 @@ def test_filter_validation_and_bad_ranges(client: TestClient, customer, recommen
 
     assert (
         client.get(
-            "/api/recommend", params={"year_min": 2010, "year_max": 1990}, headers=headers
+            "/api/recommend", params={**ITEM, "year_min": 2010, "year_max": 1990}, headers=headers
         ).status_code
         == 422
     )
-    assert client.get("/api/recommend", params={"limit": 0}, headers=headers).status_code == 422
     assert (
-        client.get("/api/recommend", params={"min_score": 9.0}, headers=headers).status_code == 422
+        client.get("/api/recommend", params={**ITEM, "limit": 0}, headers=headers).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            "/api/recommend", params={**ITEM, "min_score": 9.0}, headers=headers
+        ).status_code
+        == 422
     )
 
 

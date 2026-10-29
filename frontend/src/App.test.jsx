@@ -18,6 +18,7 @@ vi.mock("./api.js", () => {
     listRatings: vi.fn(),
     searchMovies: vi.fn(),
     getRecommendations: vi.fn(),
+    listExperiments: vi.fn(),
     signup: vi.fn(),
     login: vi.fn(),
     saveRating: vi.fn(),

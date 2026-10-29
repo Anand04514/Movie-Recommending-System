@@ -7,14 +7,16 @@ too obscure for the model.
 FastAPI + SQLAlchemy + Alembic backend, React + Vite frontend, and a pure-Python `recsys/` package
 that holds all the data and ML logic (no web or database imports, so it can be tested alone).
 
-**Current status:** Phases 0–5 are complete and tested (5.1–5.7 of the plan; 5.8–5.13 are still
-open, see [Known gaps](#known-gaps)). A new user can sign up, rate five varied films on an
-onboarding screen, search the real catalog, rate anything in half-star steps, and read personalized
-picks from four models — item-based CF, SVD with fold-in, content-based, and the validation-tuned
-hybrid — each with the ratings behind it. Lists can be filtered by genre, year and predicted score,
-back-of-list discovery picks are labelled, and Like / Not for me feedback changes the next list
-immediately. The accuracy dashboard charts eight methods from the database. Posters and synopses
-appear automatically once a free TMDB key is configured.
+**Current status:** Phases 0–5 are complete through 5.9 and tested. A new user can sign up, rate five
+varied films on an onboarding screen, search the real catalog, rate anything in half-star steps, and
+read personalized picks from five models — item-based CF, user-based CF, SVD with fold-in,
+content-based, and the validation-tuned hybrid — each with the ratings behind it. Which model a user
+gets **by default** is decided by a sticky A/B experiment; picking one by hand overrides it. Lists
+can be filtered by genre, year and predicted score, back-of-list discovery picks are labelled, and
+Like / Not for me feedback changes the next list immediately. Scored candidates are cached per user
+(measured 1.65× faster on repeat requests) and the accuracy dashboard charts eight methods plus live
+engagement per A/B arm. Posters and synopses appear automatically once a free TMDB key is configured.
+On-demand TMDB ingestion (5.10–5.13) is still open — see [Known gaps](#known-gaps).
 
 ## Quickstart
 
@@ -44,6 +46,13 @@ automatically at startup when the dialect is PostgreSQL. `JWT_SECRET` must be re
 deployment. `scripts/seed_db.py --demo-users 0` seeds the catalog only; `--refresh-demo` rebuilds
 the demo users.
 
+Optional, and what a deployment should schedule after each retrain: warm the recommendation cache
+(`--users 0` warms every profile with ratings, `--clear` starts from scratch).
+
+```bash
+uv run python scripts/precompute_recs.py --users 200 --limit 50
+```
+
 ## What you can do
 
 | Feature | Notes |
@@ -51,13 +60,15 @@ the demo users.
 | Sign up / sign in | JWT access tokens, bcrypt hashing, session restored from local storage |
 | Search any movie | Trigram (PostgreSQL) or word-boundary prefix ranking (SQLite); all 87,585 titles |
 | Rate films | Half-star widget (0.5–5.0), upsert and delete, "My ratings" library with the average |
-| For you | Four models: hybrid (default), SVD with fold-in, item-based CF, content-based; each pick carries a reason line, the runner-up ratings behind it and a damped predicted score |
+| For you | Five models: hybrid, SVD with fold-in, item-based CF, user-based CF, content-based; the default is assigned by the A/B experiment and every pick carries a reason line, the runner-up ratings behind it and a damped predicted score |
 | Filters | Genre chips, a release-year range and a minimum predicted rating, applied to a wider scored pool |
 | Onboarding | Five well-known films spanning genres and decades; progress unlocks the personalised models, with popularity + genre fallback before that |
 | Feedback | Like / Not for me on every pick; the action is logged and the film leaves the next list immediately |
 | Discovery | A small tail slice is relabelled when it genuinely steps outside the profile, and badged “Discovery” |
 | Compare | Any two of five methods side by side for the same profile, with picks both lists agree on marked “Both” |
 | Accuracy | RMSE, MAE, precision/recall/NDCG@10 and coverage for eight methods, charted from `model_runs` |
+| A/B default model | Sticky per-user assignment between the hybrid and user-CF; the arm is shown on the page and its engagement is reported |
+| Cached candidates | `precomputed_recs` holds scored candidates per user and method; repeat page loads skip the model, and stale rows are never served |
 | Posters and details | Titles open a details dialog; posters and synopses load lazily from TMDB and cache locally |
 | Cold start | Users with no usable signal get the popularity baseline plus an onboarding prompt |
 
@@ -135,7 +146,25 @@ Scores eight methods on the same held-out pairs, tunes the hybrid weight on a va
 the *training* data (never the test slice), and writes `data/processed/evaluation.json` plus one
 row per method in the `model_runs` table. See [Results](#results).
 
-### 4. `scripts/seed_db.py` — catalog and demo users
+### 4. `scripts/precompute_recs.py` — candidate cache
+
+Turns the artifacts into per-user candidate rows so a signed-in user's second page load does not run
+a model. Only profiles with at least one rating are warmed (seeded MovieLens users are skipped: they
+cannot sign in), most recently active first:
+
+```
+warmed 5/5 profiles in 0.5s (limit=20)
+  hybrid       80 candidates across 4 profiles
+  svd         100 candidates across 5 profiles
+  item_cf      80 candidates across 4 profiles
+  user_cf      80 candidates across 4 profiles
+  content     100 candidates across 5 profiles
+```
+
+Two profiles has no candidates for the collaborative models: their ratings leave nothing after
+mean-centering, so those models correctly fall back to popularity, which is never cached.
+
+### 5. `scripts/seed_db.py` — catalog and demo users
 
 The database stores the **catalog** (all 87,585 movies) and **demo users** only; the 32M training
 ratings stay on disk as Parquet and a CSR matrix.
@@ -192,6 +221,59 @@ mean), the service falls back to the popularity baseline and reports `cold_start
 what the UI uses to show the onboarding prompt instead of the personalization copy. A profile with
 fewer than five ratings reports `needs_onboarding=true` and is pointed at the five-film onboarding
 screen, which deliberately spans genres and decades so the first profile is not a monoculture.
+
+## A/B experiments and the candidate cache
+
+### Which model a user sees by default (5.8)
+
+`backend/app/experiments.py` runs one experiment, `default_model_v1`, splitting users between the
+tuned `hybrid` and `user_cf`, the best-ranking single model. Three decisions make the numbers
+defensible:
+
+- **Assignment is sticky and reproducible.** The arm is a SHA-256 bucket of `(experiment, user_id)`,
+  written to `experiment_assignments` on first sight. The hash keeps the split even without storage;
+  the row means a user never moves arms and a later change to the variant list cannot reshuffle
+  people who are already in.
+- **Only assigned traffic counts.** `GET /api/recommend` consults the experiment only when the client
+  omits `algorithm`. A user who picks a model in the UI sends it explicitly, that impression is
+  logged with a null arm, and it never enters the comparison.
+- **Outcomes are attributed in time.** A like, reject, click or rating counts for an arm only when it
+  happened **at or after** the impression of that film; a rating from before the recommendation
+  cannot flatter whichever arm happened to show the film afterwards.
+
+`GET /api/experiments` returns, per arm: assigned users, impressions, likes, rejects, clicks,
+impressions later rated, like rate (likes ÷ like-or-reject verdicts) and rated rate. The accuracy
+page renders it as **Live engagement**, and it refuses to call a leader below 50 impressions per arm
+— with traffic this young the honest answer is a tally, not a result.
+
+### Cached candidates (5.9)
+
+The cache stores **scored candidates**, not rendered cards. A hit still resolves movie rows, applies
+current exclusions and filters, and rebuilds the reason lines; what it skips is the neighbour and
+factor maths. That ordering is deliberate: a cached list cannot resurrect a film the user rated
+since, and cannot show a stale explanation.
+
+| Rule | Behaviour |
+| --- | --- |
+| Filters | Never served from cache — a filtered list needs a wider pool than the warm one |
+| Warm pool too small | Falls back to the model and rewrites the cache |
+| Exclusions | Applied live; if they empty the pool the list is recomputed rather than shortened |
+| Retrain | Rows older than the newest artifact file are ignored |
+| Age | Rows older than `PRECOMPUTE_TTL_MINUTES` (default 360) are ignored |
+| Write failures | Logged and swallowed: a broken cache is a slow request, never a failed one |
+
+Measured on the local database and the real artifacts, 15 alternating request pairs as user `Mira`
+(arm `user_cf`, limit 12), with the cache cleared before each pair:
+
+| Path | Median | Min |
+| --- | --- | --- |
+| Live (`cached: false`) | 14.39 ms | 13.72 ms |
+| Cached (`cached: true`) | 8.74 ms | 7.64 ms |
+
+**1.65× on the median**, identical picks in both cases. The remaining 8.7 ms is database work the
+cache does not remove — loading the profile, exclusions, candidate movie rows and writing
+impressions — which is why the estimate stays modest instead of claiming an order of magnitude. The
+serve path reports `cached` so the claim is checkable per request instead of inferred.
 
 ## Posters and details
 
@@ -298,24 +380,25 @@ What the numbers say:
 | `GET` | `/api/ratings` | ✔ | The user's ratings with movie payloads |
 | `POST` | `/api/ratings` | ✔ | Upsert; rejects non-half-star values and out-of-range ratings |
 | `DELETE` | `/api/ratings/{movie_id}` | ✔ | 204 on success, 404 when unrated |
-| `GET` | `/api/recommend?limit=&algorithm=&genres=&year_min=&year_max=&min_score=` | ✔ | Picks with score, predicted rating, reason, evidence and `discovery` flag; `algorithm` is `hybrid` (default), `svd`, `item_cf`, `user_cf` or `content`; `genres` is comma-separated and any match qualifies |
+| `GET` | `/api/recommend?limit=&algorithm=&experiment=&genres=&year_min=&year_max=&min_score=` | ✔ | Picks with score, predicted rating, reason, evidence, `discovery` and `cached` flags. Omit `algorithm` and the A/B experiment assigns `hybrid` or `user_cf` (reported as `experiment`/`variant`); pass it to choose `hybrid`, `svd`, `item_cf`, `user_cf` or `content` |
 | `GET` | `/api/compare?limit=&left=&right=` | ✔ | Any two of the five algorithms for one profile, with `overlap` ids and `overlap_count` |
 | `GET` | `/api/onboarding` | ✔ | Five diverse, well-known films plus the user's rated count |
 | `GET` | `/api/feedback` | ✔ | The user's liked / rejected / clicked history, newest first |
 | `POST` | `/api/feedback` | ✔ | Record `liked`, `rejected` or `clicked` with the algorithm that showed the pick |
 | `DELETE` | `/api/feedback/{movie_id}` | ✔ | Undo feedback for a film |
 | `GET` | `/api/model-runs?limit=` | – | Latest evaluation per method, newest first |
+| `GET` | `/api/experiments` | – | Every A/B experiment with per-arm users, impressions, likes, rejects, clicks and the rates derived from them |
 
 ## Tests and lint
 
 ```bash
-uv run pytest        # 255 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 272 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
-                     #            feedback, TMDB
+                     #            feedback, A/B assignment and attribution, cache validity, TMDB
 uv run ruff check .  # clean
 cd frontend
-npm test             # 90 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
-                     #            model switch, compare, dashboard, session
+npm test             # 94 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
+                     #            model switch, compare, dashboard, engagement, session
 npm run build        # production build
 ```
 
@@ -369,6 +452,19 @@ and mock the API module.
   relabelled when it genuinely steps outside the user's favourite genres.
 - Onboarding sends five films chosen for genre and decade spread, not the five most popular, so the
   first profile is not five blockbusters that make every recommendation look the same.
+- **The experiment never steals a choice.** A/B assignment applies only when the client asks for
+  "whatever the default is"; an explicit algorithm is honoured, logged without an arm, and left out
+  of the comparison, so the report measures the experiment rather than the model picker.
+- Arm assignment is a **hash, not a random number**: reproducible in tests, stable if the row is
+  lost, and always backed by an `experiment_assignments` row that is the source of truth once
+  written.
+- Engagement is attributed **in time**: an outcome counts only if it happened at or after the
+  impression it is matched to, so pre-existing ratings cannot be counted as successes.
+- The cache stores **candidates, not cards**. Rendering, exclusions and filters always run live, so
+  the fast path cannot show a film the user has already rated or an explanation that no longer
+  holds; the trade is that a hit saves the model maths, not the whole request.
+- Cache validity compares against the **newest artifact file**, not just a timer, so retraining the
+  neighbours or factors cannot leave yesterday's scores in front of users.
 
 ## Layout
 
@@ -376,13 +472,15 @@ and mock the API module.
 recsys/          pure ML/data package: titles, chunked loading, filters, splits, id maps,
                  baselines, item-item CF, user CF, SVD + fold-in, content features, hybrid,
                  serendipity, metrics, evaluation harness
-backend/app/     FastAPI app: settings, database, models, schemas, security, routers, TMDB client
+backend/app/     FastAPI app: settings, database, models, schemas, security, routers, TMDB client,
+                 experiments (A/B assignment and reporting), precompute (candidate cache)
 backend/tests/   API tests (auth, search, ratings, recommendations, algorithms, feedback,
                  onboarding, TMDB, poster prefetch)
 migrations/      Alembic environment, initial schema, model_runs, feedback/impressions
 frontend/src/    React app: pages (discover, for you, onboarding, compare, ratings, accuracy),
                  components, api client, tests
-scripts/         prepare_data.py, train_and_precompute.py, evaluate_models.py, seed_db.py, fetch_posters.py
+scripts/         prepare_data.py, train_and_precompute.py, evaluate_models.py, precompute_recs.py,
+                 seed_db.py, fetch_posters.py
 data/raw/        downloaded MovieLens files — never modified or committed
 data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.json — never committed
 tests/           tests for recsys/
@@ -398,7 +496,8 @@ tests/           tests for recsys/
 | 3 | Metrics, evaluation on the chronological split, `model_runs`, UI polish, API tests | Done |
 | 4 | Filters, "why this recommendation", algorithm comparison, accuracy dashboard, posters and details | Done |
 | 5 | SVD + fold-in, content-based, hybrid with validation tuning, onboarding, serendipity, feedback loop | Done (5.1–5.7) |
-| 5b | A/B variants, precomputed recommendation cache, TMDB ingestion, new-release boost (5.8–5.13) | Next |
+| 5b | A/B default model with engagement report, precomputed candidate cache | Done (5.8–5.9) |
+| 5c | On-demand TMDB ingestion, content cold start for new films, new-release boost (5.10–5.13) | Next |
 | 6 | Deployment, demo recording, release tag | Planned |
 
 ## Known gaps
@@ -416,12 +515,17 @@ tests/           tests for recsys/
 - With a two-film profile, reasons can all cite the same source film and predicted scores sit close
   to the user's mean; both improve as the profile grows. The discovery slice only activates once a
   profile has enough signal to define "usual", so brand-new users see none.
-- Impressions are logged (`recommendation_logs`) and feedback is recorded against the algorithm that
-  showed the pick, but there is **no A/B variant assignment or engagement report** yet (5.8): the
-  data is being collected, nothing reads it.
-- **No precomputed recommendation cache** (5.9): every request folds the profile in, which is
-  milliseconds at this scale, but `precomputed_recs` is unused and a seeded-user nightly job is not
-  written.
+- The A/B report has **no significance test** and no minimum-runtime rule: it reports counts and
+  refuses to name a leader under 50 impressions per arm, but a proper sequential test would be the
+  next step before trusting a small gap.
+- **Only one experiment is defined** (`default_model_v1`). The registry supports more, but assignment
+  and the report are per-experiment and there is no scheduling or auto-stop logic.
+- A **click** can only be recorded through the API: cards log impressions and rate/like/reject, but
+  there is no click beacon on the details dialog yet, so the `clicks` column stays at zero in normal
+  use.
+- The cache covers **unfiltered page loads only**, because a filtered request needs a pool far wider
+  than one warm-up, and it is not read for cold-start users. `precomputed_recs` also grows with users:
+  there is a `--clear` flag but no retention job yet.
 - **TMDB ingestion of films newer than MovieLens is not built** (5.10–5.13): ml-32m ends in 2023, so a
   film like *Dune: Part Two* is genuinely missing from search. The TMDB client, cache and detail
   enrichment exist; on-demand catalog insertion, the new-release boost and the New releases row do

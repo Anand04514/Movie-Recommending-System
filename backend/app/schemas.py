@@ -159,6 +159,11 @@ class RecommendationResponse(BaseModel):
     filters: RecommendationFiltersApplied
     candidates_considered: int
     needs_onboarding: bool = False
+    # True when the scored candidates came from precomputed_recs instead of a live model call.
+    cached: bool = False
+    # Set only when an experiment assigned this list; an explicitly chosen model leaves both null.
+    experiment: str | None = None
+    variant: str | None = None
     recommendations: list[RecommendationOut]
 
 
@@ -174,6 +179,25 @@ class ComparisonResponse(BaseModel):
     right: AlgorithmComparison
     overlap: list[int]
     overlap_count: int
+
+
+class VariantReportOut(BaseModel):
+    variant: str
+    users: int
+    impressions: int
+    likes: int
+    rejects: int
+    clicks: int
+    rated_after: int
+    positive_rate: float | None = None
+    rated_rate: float | None = None
+    engagement_rate: float | None = None
+
+
+class ExperimentReportOut(BaseModel):
+    name: str
+    description: str
+    variants: list[VariantReportOut]
 
 
 class ModelRunOut(BaseModel):
@@ -218,6 +242,29 @@ class FeedbackOut(BaseModel):
 def normalized_query_text(query: str) -> str:
     """The same normalization stored in ``movies.title_search``, applied to user input."""
     return normalize_for_search(query)
+
+
+def experiment_report_to_out(report: Any) -> ExperimentReportOut:
+    """Convert an ``experiments.ExperimentReport`` into its response shape."""
+    return ExperimentReportOut(
+        name=report.name,
+        description=report.description,
+        variants=[
+            VariantReportOut(
+                variant=variant.variant,
+                users=variant.users,
+                impressions=variant.impressions,
+                likes=variant.likes,
+                rejects=variant.rejects,
+                clicks=variant.clicks,
+                rated_after=variant.rated_after,
+                positive_rate=variant.positive_rate,
+                rated_rate=variant.rated_rate,
+                engagement_rate=variant.engagement_rate,
+            )
+            for variant in report.variants
+        ],
+    )
 
 
 def model_run_to_out(run: ModelRun) -> ModelRunOut:

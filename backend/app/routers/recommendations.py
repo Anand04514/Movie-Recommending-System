@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import logging
 import statistics
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.deps import get_current_user
+from backend.app.experiments import (
+    EXPERIMENTS,
+    ExperimentAssignment,
+    assign,
+    get_experiment,
+)
+from backend.app.experiments import report as experiment_report
 from backend.app.models import Feedback, ModelRun, Movie, Rating, RecommendationLog, User
+from backend.app.precompute import load_batch, store_batch
 from backend.app.recommendations import (
     ArtifactsUnavailable,
     ContentService,
@@ -30,11 +40,13 @@ from backend.app.recommendations import (
 from backend.app.schemas import (
     AlgorithmComparison,
     ComparisonResponse,
+    ExperimentReportOut,
     ModelRunOut,
     RecommendationEvidence,
     RecommendationFiltersApplied,
     RecommendationOut,
     RecommendationResponse,
+    experiment_report_to_out,
     model_run_to_out,
     movie_to_out,
 )
@@ -264,7 +276,13 @@ def _apply_discovery(
 
 
 def _log_impressions(
-    db: Session, user: User, batch: RecommendationBatch, items: list[RecommendationOut]
+    db: Session,
+    user: User,
+    items: list[RecommendationOut],
+    *,
+    algorithm: str,
+    experiment: str | None = None,
+    variant: str | None = None,
 ) -> None:
     """Record what was shown; analytics must never take the page down."""
     if not items:
@@ -274,8 +292,10 @@ def _log_impressions(
             RecommendationLog(
                 user_id=user.id,
                 movie_id=item.movie.id,
-                algorithm=batch.algorithm,
+                algorithm=algorithm,
                 score=float(item.score),
+                experiment=experiment,
+                variant=variant,
             )
             for item in items
         ]
@@ -290,9 +310,16 @@ def _log_impressions(
 @router.get("/recommend", response_model=RecommendationResponse)
 def recommend(
     limit: int = Query(10, ge=1, le=50),
-    algorithm: str = Query(
-        "item_cf",
-        description="item_cf, user_cf, svd, content or hybrid (the tuned blend).",
+    algorithm: str | None = Query(
+        None,
+        description=(
+            "item_cf, user_cf, svd, content or hybrid. Omit it to let the A/B experiment assign "
+            "the default model for this user."
+        ),
+    ),
+    experiment: str | None = Query(
+        None,
+        description="Experiment to consult when algorithm is omitted; defaults to the active one.",
     ),
     genres: str = Query("", max_length=200, description="Comma-separated; any match qualifies."),
     year_min: int | None = Query(None, ge=1870, le=2100),
@@ -311,6 +338,17 @@ def recommend(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="year_min must not exceed year_max",
         )
+    # An explicit choice always wins; only an unrequested default comes from the experiment.
+    assigned: ExperimentAssignment | None = None
+    if algorithm is None:
+        try:
+            active = get_experiment(experiment)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        assigned = assign(db, user.id, active)
+        algorithm = assigned.variant
     if algorithm not in SUPPORTED_ALGORITHMS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -333,12 +371,29 @@ def recommend(
         "content": content_service,
         "hybrid": hybrid_service,
     }
-    try:
-        batch = services[algorithm].recommend(list(ratings_by_movie.items()), limit=pool)
-    except ArtifactsUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
+
+    settings = get_settings()
+    cached = False
+    batch: RecommendationBatch | None = None
+    if not filtered and ratings_by_movie:
+        # Cached candidates are only trusted for an unfiltered list: a filter needs a wider pool
+        # than the warmed one, and a stale-but-fast list is never worth a missing match.
+        batch = load_batch(
+            db,
+            user.id,
+            algorithm,
+            processed_dir=settings.processed_dir,
+            ttl=timedelta(minutes=settings.precompute_ttl_minutes),
+            limit=limit,
+        )
+        cached = batch is not None
+    if batch is None:
+        try:
+            batch = services[algorithm].recommend(list(ratings_by_movie.items()), limit=pool)
+        except ArtifactsUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
 
     items, considered = _build_items(
         db,
@@ -351,6 +406,27 @@ def recommend(
         limit=limit,
         excluded=excluded,
     )
+    if cached and len(items) < limit:
+        # New exclusions since the warm-up consumed the pool: compute properly and rewrite it.
+        try:
+            batch = services[algorithm].recommend(list(ratings_by_movie.items()), limit=pool)
+        except ArtifactsUnavailable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
+        cached = False
+        items, considered = _build_items(
+            db,
+            batch,
+            ratings_by_movie,
+            genres=selected,
+            year_min=year_min,
+            year_max=year_max,
+            min_score=min_score,
+            limit=limit,
+            excluded=excluded,
+        )
+
     items = _apply_discovery(
         items,
         db=db,
@@ -358,7 +434,17 @@ def recommend(
         limit=limit,
         enabled=not batch.cold_start and batch.algorithm != "popularity",
     )
-    _log_impressions(db, user, batch, items)
+    _log_impressions(
+        db,
+        user,
+        items,
+        algorithm=batch.algorithm,
+        experiment=assigned.experiment if assigned else None,
+        variant=assigned.variant if assigned else None,
+    )
+    if not cached and not filtered and not batch.cold_start:
+        # Write through: the next request with the same pattern is served from these rows.
+        store_batch(db, user.id, batch)
 
     return RecommendationResponse(
         algorithm=batch.algorithm,
@@ -368,6 +454,9 @@ def recommend(
         ),
         candidates_considered=considered,
         needs_onboarding=len(ratings_by_movie) < ONBOARDING_MIN_RATINGS,
+        cached=cached,
+        experiment=assigned.experiment if assigned else None,
+        variant=assigned.variant if assigned else None,
         recommendations=items,
     )
 
@@ -457,3 +546,12 @@ def model_runs(
     for row in rows:
         latest.setdefault(row.algorithm, row)
     return [model_run_to_out(row) for row in list(latest.values())[:limit]]
+
+
+@router.get("/experiments", response_model=list[ExperimentReportOut])
+def list_experiments(db: Session = Depends(get_db)) -> list[ExperimentReportOut]:
+    """Every A/B experiment with its per-arm engagement, built from impressions and outcomes."""
+    return [
+        experiment_report_to_out(experiment_report(db, get_experiment(name)))
+        for name in EXPERIMENTS
+    ]

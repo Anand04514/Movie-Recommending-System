@@ -28,6 +28,11 @@ const MODELS = [
     note: "Films that people who rated your favourites highly also rated highly.",
   },
   {
+    id: "user_cf",
+    label: "User-based CF",
+    note: "Viewers whose ratings line up with yours, weighted by how closely they agree.",
+  },
+  {
     id: "content",
     label: "Content-based",
     note: "The genres, decades and tags you keep choosing, scored over the whole catalog.",
@@ -60,7 +65,8 @@ export default function RecommendationsPage({
   const [feedbackBusyId, setFeedbackBusyId] = useState(null);
   const [actionError, setActionError] = useState(null);
   const [notice, setNotice] = useState(null);
-  const [algorithm, setAlgorithm] = useState("hybrid");
+  // Null means "let the A/B experiment assign the default"; a choice pins it explicitly.
+  const [algorithm, setAlgorithm] = useState(null);
   const [filters, setFilters] = useState({ ...EMPTY_FILTERS, genres: [] });
   const [genreOptions, setGenreOptions] = useState([]);
 
@@ -190,6 +196,12 @@ export default function RecommendationsPage({
   const picks = data?.recommendations ?? [];
   const algorithmLabel = ALGORITHM_LABELS[data?.algorithm] ?? "Recommendations";
   const algorithmNote = MODEL_NOTES[data?.algorithm] ?? "Ranked by the selected model.";
+  const servedModel = MODELS.some((model) => model.id === data?.algorithm)
+    ? data.algorithm
+    : null;
+  const selectValue = algorithm ?? servedModel ?? "";
+  const experimentLabel =
+    data?.experiment && data?.variant ? `A/B arm · ${data.variant}` : null;
 
   return (
     <>
@@ -256,9 +268,14 @@ export default function RecommendationsPage({
             <span>Model</span>
             <select
               aria-label="Recommendation model"
-              value={algorithm}
+              value={selectValue}
               onChange={(event) => setAlgorithm(event.target.value)}
             >
+              {servedModel === null ? (
+                <option value="" disabled>
+                  {data.cold_start ? "Popularity fallback" : "Assigned model"}
+                </option>
+              ) : null}
               {MODELS.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.label}
@@ -273,6 +290,7 @@ export default function RecommendationsPage({
           ) : (
             <span className="muted">{algorithmNote}</span>
           )}
+          {experimentLabel ? <span className="algo-arm">{experimentLabel}</span> : null}
           <span className="algo-count">
             {picks.length} {picks.length === 1 ? "pick" : "picks"}
             {data.candidates_considered

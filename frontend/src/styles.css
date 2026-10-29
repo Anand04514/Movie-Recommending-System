@@ -587,6 +587,17 @@ h1 {
   color: #c9d2e1;
 }
 
+.algo-arm {
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
 .algo-dot {
   width: 7px;
   height: 7px;
@@ -1563,6 +1574,21 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--panel);
+}
+
+/* The A/B engagement block sits below the offline table and must not be mistaken for a chart. */
+.engagement-card {
+  margin-top: 26px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+}
+
+.engagement-card h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .chart-card h2 {

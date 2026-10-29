@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api.js", () => ({
   listModelRuns: vi.fn(),
+  listExperiments: vi.fn(),
 }));
 
 import * as api from "../api.js";
@@ -57,6 +58,37 @@ const RUNS = [
   },
 ];
 
+const EXPERIMENT = {
+  name: "default_model_v1",
+  description: "Which model a signed-in user gets when they have not chosen one.",
+  variants: [
+    {
+      variant: "hybrid",
+      users: 12,
+      impressions: 84,
+      likes: 6,
+      rejects: 2,
+      clicks: 0,
+      rated_after: 10,
+      positive_rate: 0.75,
+      rated_rate: 0.119,
+      engagement_rate: 0.21,
+    },
+    {
+      variant: "user_cf",
+      users: 11,
+      impressions: 70,
+      likes: 3,
+      rejects: 5,
+      clicks: 0,
+      rated_after: 4,
+      positive_rate: 0.375,
+      rated_rate: 0.057,
+      engagement_rate: 0.1,
+    },
+  ],
+};
+
 async function findRow(name) {
   return screen.findByRole("row", { name: new RegExp(name) });
 }
@@ -64,6 +96,7 @@ async function findRow(name) {
 describe("AccuracyPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    api.listExperiments.mockResolvedValue([]);
   });
 
   it("renders every method with readable metrics", async () => {
@@ -135,6 +168,47 @@ describe("AccuracyPage", () => {
       await screen.findByRole("heading", { name: "No evaluation runs recorded yet." }),
     ).toBeInTheDocument();
     expect(screen.getByText("uv run python scripts/evaluate_models.py")).toBeInTheDocument();
+  });
+
+  it("reports live A/B engagement per arm next to the offline table", async () => {
+    api.listModelRuns.mockResolvedValue(RUNS);
+    api.listExperiments.mockResolvedValue([EXPERIMENT]);
+    render(<AccuracyPage />);
+
+    const panel = await screen.findByRole("region", { name: "Live engagement" });
+    const hybrid = within(panel).getByRole("row", { name: /^Hybrid/ });
+    expect(hybrid).toHaveTextContent("84");
+    expect(hybrid).toHaveTextContent("75%");
+    expect(hybrid.querySelector("td.is-best")).not.toBeNull();
+
+    const userCf = within(panel).getByRole("row", { name: /^User-based CF/ });
+    expect(userCf).toHaveTextContent("37.5%");
+    expect(userCf.querySelector("td.is-best")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Live engagement" })).toBeInTheDocument();
+  });
+
+  it("refuses to crown an arm on too little traffic", async () => {
+    api.listModelRuns.mockResolvedValue(RUNS);
+    api.listExperiments.mockResolvedValue([
+      {
+        ...EXPERIMENT,
+        variants: EXPERIMENT.variants.map((arm) => ({ ...arm, impressions: 5 })),
+      },
+    ]);
+    render(<AccuracyPage />);
+
+    const panel = await screen.findByRole("region", { name: "Live engagement" });
+    const hybrid = within(panel).getByRole("row", { name: /^Hybrid/ });
+    expect(hybrid.querySelector("td.is-best")).toBeNull();
+    expect(screen.getByText(/this is a tally, not a result/)).toBeInTheDocument();
+  });
+
+  it("explains an empty engagement panel instead of showing zeroes", async () => {
+    api.listModelRuns.mockResolvedValue(RUNS);
+    api.listExperiments.mockResolvedValue([]);
+    render(<AccuracyPage />);
+
+    expect(await screen.findByText(/No experiment traffic yet/)).toBeInTheDocument();
   });
 
   it("retries after a failed load", async () => {

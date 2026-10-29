@@ -137,7 +137,9 @@ class RecommendationLog(Base):
     """An impression: this film was shown to this user by this method at this rank.
 
     One row per shown film lets the accuracy dashboard answer "how often do shown picks get
-    rated or liked?" without joining to a mutable current recommendation list.
+    rated or liked?" without joining to a mutable current recommendation list. When the list came
+    from an A/B variant, ``experiment`` and ``variant`` record that arm; a list the user asked for
+    explicitly leaves both null, so only assigned traffic enters the comparison.
     """
 
     __tablename__ = "recommendation_logs"
@@ -151,6 +153,8 @@ class RecommendationLog(Base):
     )
     algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
+    experiment: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    variant: Mapped[str | None] = mapped_column(String(32), nullable=True)
     shown_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True, nullable=False
     )
@@ -158,6 +162,70 @@ class RecommendationLog(Base):
     __table_args__ = (
         Index("ix_recommendation_logs_user_shown", "user_id", "shown_at"),
         Index("ix_recommendation_logs_algorithm", "algorithm"),
+        Index("ix_recommendation_logs_experiment", "experiment", "variant"),
+    )
+
+
+class ExperimentAssignment(Base):
+    """A user's sticky arm in one A/B experiment.
+
+    The bucket is derived from a hash of ``(experiment, user_id)``, so an assignment is stable
+    even before it is written, and the row makes it auditable and queryable afterwards.
+    """
+
+    __tablename__ = "experiment_assignments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    experiment: Mapped[str] = mapped_column(String(64), nullable=False)
+    variant: Mapped[str] = mapped_column(String(32), nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "experiment", name="uq_experiment_assignments_user"),
+        Index("ix_experiment_assignments_experiment", "experiment", "variant"),
+    )
+
+
+class PrecomputedRec(Base):
+    """One scored candidate for one user and method, written offline by the warm-up script.
+
+    These are *scored candidates*, not rendered cards: the serving path still resolves movie rows,
+    applies exclusions and builds reason lines, so a cached list can never show a film the user has
+    rated since and never shows a stale explanation. Only the model work (neighbour and factor
+    maths) is skipped, which is the part that costs a request.
+    """
+
+    __tablename__ = "precomputed_recs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
+    movie_id: Mapped[int] = mapped_column(
+        ForeignKey("movies.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    predicted_rating: Mapped[float] = mapped_column(Float, nullable=False)
+    source_movie_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    neighbors_rated: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # JSON list of [movieId, strength] pairs, strongest first.
+    contributions: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "algorithm", "movie_id", name="uq_precomputed_user_movie"),
+        Index("ix_precomputed_recs_user_algorithm", "user_id", "algorithm", "rank"),
+        Index("ix_precomputed_recs_computed_at", "computed_at"),
     )
 
 

@@ -33,6 +33,112 @@ function formatMetric(value, kind) {
   return kind === "percent" ? PERCENT.format(value) : value.toFixed(3);
 }
 
+// Below this many impressions per arm the gap between two variants is noise, so the page reports
+// the tally without crowning a winner.
+const ENGAGEMENT_MIN_IMPRESSIONS = 50;
+
+function formatRate(value) {
+  return value == null ? "—" : PERCENT.format(value);
+}
+
+function EngagementPanel() {
+  const [state, setState] = useState({ status: "loading", experiment: null, error: null });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api
+      .listExperiments({ signal: controller.signal })
+      .then((reports) => {
+        const [experiment] = Array.isArray(reports) ? reports : [];
+        setState({ status: "ready", experiment: experiment ?? null, error: null });
+      })
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setState({ status: "error", experiment: null, error: error.message });
+      });
+    return () => controller.abort();
+  }, []);
+
+  const experiment = state.experiment;
+  const arms = experiment?.variants ?? [];
+  const impressions = arms.reduce((total, arm) => total + arm.impressions, 0);
+  const enoughTraffic = arms.every((arm) => arm.impressions >= ENGAGEMENT_MIN_IMPRESSIONS);
+  const bestPositive = Math.max(...arms.map((arm) => arm.positive_rate ?? -1));
+  const leader =
+    enoughTraffic && bestPositive >= 0
+      ? arms.find((arm) => arm.positive_rate === bestPositive)?.variant
+      : null;
+
+  return (
+    <section className="engagement-card" aria-labelledby="engagement-title">
+      <h2 id="engagement-title">Live engagement</h2>
+      <p className="chart-note">
+        {experiment?.description ??
+          "Which model a signed-in user gets when they have not chosen one."}
+      </p>
+
+      {state.status === "error" ? (
+        <p className="table-note">Engagement data is unavailable right now ({state.error}).</p>
+      ) : null}
+
+      {state.status !== "error" && impressions === 0 ? (
+        <p className="table-note">
+          No experiment traffic yet. Impressions are logged as signed-in users load the For you page
+          without choosing a model.
+        </p>
+      ) : null}
+
+      {arms.length > 0 && impressions > 0 ? (
+        <>
+          <div className="table-wrap">
+            <table className="metrics-table">
+              <caption className="sr-only">A/B engagement for each variant</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Arm</th>
+                  <th scope="col" className="num">Users</th>
+                  <th scope="col" className="num">Shown</th>
+                  <th scope="col" className="num">Likes</th>
+                  <th scope="col" className="num">Rejects</th>
+                  <th scope="col" className="num">Like rate</th>
+                  <th scope="col" className="num">Rated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {arms.map((arm) => (
+                  <tr key={arm.variant}>
+                    <th scope="row" className="method">
+                      {methodName(arm.variant)}
+                    </th>
+                    <td className="num">{arm.users}</td>
+                    <td className="num">{arm.impressions}</td>
+                    <td className="num">{arm.likes}</td>
+                    <td className="num">{arm.rejects}</td>
+                    <td className={`num ${arm.variant === leader ? "is-best" : ""}`}>
+                      {arm.variant === leader ? (
+                        <span className="sr-only">Leading arm: </span>
+                      ) : null}
+                      {formatRate(arm.positive_rate)}
+                    </td>
+                    <td className="num">{formatRate(arm.rated_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="table-note">
+            Only lists the experiment assigned are counted; a model the user picked by hand is
+            excluded. Like rate is likes over like-or-reject verdicts.
+            {enoughTraffic
+              ? ""
+              : ` With fewer than ${ENGAGEMENT_MIN_IMPRESSIONS} shown picks per arm this is a tally, not a result.`}
+          </p>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function buildMetrics(k) {
   return [
     { key: "rmse", label: "RMSE", better: "lower", kind: "score" },
@@ -244,10 +350,12 @@ export default function AccuracyPage() {
           <p className="table-note">
             Lower RMSE and MAE are better (rating prediction); higher precision, recall, NDCG and
             catalogue coverage are better (ranking). These are offline measurements on a fixed
-            chronological split, not live A/B results.
+            chronological split, not live A/B results — those are below.
           </p>
         </>
       ) : null}
+
+      <EngagementPanel />
     </>
   );
 }

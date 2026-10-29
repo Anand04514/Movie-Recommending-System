@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./movie_recs.db"
     # Where prepare_data.py and train_and_precompute.py write their artifacts.
     processed_dir: str = "data/processed"
+    # Precomputed candidates older than this are ignored in favour of a live computation.
+    precompute_ttl_minutes: int = 360
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
