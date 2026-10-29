@@ -4,6 +4,7 @@ import * as api from "./api.js";
 import AccuracyPage from "./pages/AccuracyPage.jsx";
 import AuthPage from "./pages/AuthPage.jsx";
 import ComparePage from "./pages/ComparePage.jsx";
+import OnboardingPage from "./pages/OnboardingPage.jsx";
 import RatingsPage from "./pages/RatingsPage.jsx";
 import RecommendationsPage from "./pages/RecommendationsPage.jsx";
 import SearchPage from "./pages/SearchPage.jsx";
@@ -134,9 +135,16 @@ export default function App() {
     setRefreshKey((key) => key + 1);
   }, []);
 
-  function handleAuthenticated(profile) {
+  function handleAuthenticated(profile, { isNew = false } = {}) {
     setUser(profile);
     setAuthMessage("");
+    setRefreshKey((key) => key + 1);
+    if (isNew) {
+      // A brand-new account has nothing to personalize from; teach it first.
+      setPendingView("for-you");
+      setView("onboarding");
+      return;
+    }
     const next = pendingView ?? "for-you";
     setPendingView("for-you");
     setView(next);
@@ -229,6 +237,21 @@ export default function App() {
             onRate={handleRate}
             onRequireAuth={openAuth}
             onExplore={explore}
+            onOnboard={() => setView("onboarding")}
+          />
+        ) : null}
+
+        {!checkingSession && view === "onboarding" ? (
+          <OnboardingPage
+            user={user}
+            ratingsByMovie={ratingsByMovie}
+            onRate={handleRate}
+            onDone={() => {
+              setRefreshKey((key) => key + 1);
+              setView("for-you");
+            }}
+            onSkip={explore}
+            onRequireAuth={openAuth}
           />
         ) : null}
 

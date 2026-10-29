@@ -104,6 +104,63 @@ class Rating(Base):
     __table_args__ = (UniqueConstraint("user_id", "movie_id", name="uq_ratings_user_movie"),)
 
 
+class Feedback(Base):
+    """A like, reject or click on a recommended film, used to refine the next list immediately.
+
+    Rejections and likes are both exclusions from future recommendations: either way the user has
+    now formed an opinion, and showing the film again wastes a slot. The action is kept for the
+    engagement statistics in ``recommendation_logs`` and the accuracy dashboard.
+    """
+
+    __tablename__ = "feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    movie_id: Mapped[int] = mapped_column(
+        ForeignKey("movies.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_algorithm: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "movie_id", "action", name="uq_feedback_user_movie_action"),
+        Index("ix_feedback_user_action", "user_id", "action"),
+    )
+
+
+class RecommendationLog(Base):
+    """An impression: this film was shown to this user by this method at this rank.
+
+    One row per shown film lets the accuracy dashboard answer "how often do shown picks get
+    rated or liked?" without joining to a mutable current recommendation list.
+    """
+
+    __tablename__ = "recommendation_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    movie_id: Mapped[int] = mapped_column(
+        ForeignKey("movies.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    shown_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_recommendation_logs_user_shown", "user_id", "shown_at"),
+        Index("ix_recommendation_logs_algorithm", "algorithm"),
+    )
+
+
 class ModelRun(Base):
     """One offline evaluation of one method, so results outlive any single README edit.
 

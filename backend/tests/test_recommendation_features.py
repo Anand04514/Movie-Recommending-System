@@ -280,7 +280,7 @@ def test_comparison_validates_the_algorithms(
 ) -> None:
     headers, _ = customer
 
-    assert client.get("/api/compare", params={"left": "svd"}, headers=headers).status_code == 422
+    assert client.get("/api/compare", params={"left": "als"}, headers=headers).status_code == 422
     same = client.get(
         "/api/compare", params={"left": "item_cf", "right": "item_cf"}, headers=headers
     )

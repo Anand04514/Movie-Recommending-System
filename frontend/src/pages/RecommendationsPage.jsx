@@ -11,6 +11,39 @@ import SignInPrompt from "../components/SignInPrompt.jsx";
 
 const LIMIT = 12;
 const FILTER_DEBOUNCE_MS = 200;
+const MODELS = [
+  {
+    id: "hybrid",
+    label: "Hybrid · CF + content",
+    note: "Similar viewers plus genre, tag and decade overlap, blended at the weight picked by validation.",
+  },
+  {
+    id: "svd",
+    label: "SVD with fold-in",
+    note: "Matrix factorization: latent taste factors learned from the ratings, then folded in from yours.",
+  },
+  {
+    id: "item_cf",
+    label: "Item-based CF",
+    note: "Films that people who rated your favourites highly also rated highly.",
+  },
+  {
+    id: "content",
+    label: "Content-based",
+    note: "The genres, decades and tags you keep choosing, scored over the whole catalog.",
+  },
+];
+const MODEL_NOTES = Object.fromEntries(MODELS.map((model) => [model.id, model.note]));
+MODEL_NOTES.user_cf = "Viewers whose ratings line up with yours, weighted by how closely they agree.";
+MODEL_NOTES.popularity = "The crowd's list, until your ratings are enough to personalise.";
+const ALGORITHM_LABELS = {
+  hybrid: "Hybrid · collaborative + content",
+  svd: "SVD with fold-in",
+  item_cf: "Item-based collaborative filtering",
+  user_cf: "User-based collaborative filtering",
+  content: "Content-based model",
+  popularity: "Popularity baseline",
+};
 
 export default function RecommendationsPage({
   user,
@@ -19,11 +52,15 @@ export default function RecommendationsPage({
   onRate,
   onRequireAuth,
   onExplore,
+  onOnboard,
 }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [state, setState] = useState({ status: "idle", data: null, error: null });
   const [savingId, setSavingId] = useState(null);
+  const [feedbackBusyId, setFeedbackBusyId] = useState(null);
   const [actionError, setActionError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [algorithm, setAlgorithm] = useState("hybrid");
   const [filters, setFilters] = useState({ ...EMPTY_FILTERS, genres: [] });
   const [genreOptions, setGenreOptions] = useState([]);
 
@@ -69,6 +106,7 @@ export default function RecommendationsPage({
       api
         .getRecommendations({
           limit: LIMIT,
+          algorithm,
           genres: request.genres,
           yearMin: request.yearMin,
           yearMax: request.yearMax,
@@ -86,7 +124,7 @@ export default function RecommendationsPage({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [user, refreshKey, reloadKey, request]);
+  }, [user, refreshKey, reloadKey, request, algorithm]);
 
   async function rate(movie, value) {
     if (!user) {
@@ -101,6 +139,36 @@ export default function RecommendationsPage({
       setActionError(error.message);
     } finally {
       setSavingId(null);
+    }
+  }
+
+  async function react(movie, action) {
+    setFeedbackBusyId(movie.id);
+    setActionError(null);
+    try {
+      await api.sendFeedback(movie.id, action, state.data?.algorithm ?? algorithm);
+      setState((previous) =>
+        previous.data
+          ? {
+              ...previous,
+              data: {
+                ...previous.data,
+                recommendations: previous.data.recommendations.filter(
+                  (item) => item.movie.id !== movie.id,
+                ),
+              },
+            }
+          : previous,
+      );
+      setNotice(
+        action === "liked"
+          ? `Liked ${movie.title} — we will look for more like it.`
+          : `Noted. ${movie.title} will not be shown again.`,
+      );
+    } catch (error) {
+      setActionError(error.message);
+    } finally {
+      setFeedbackBusyId(null);
     }
   }
 
@@ -120,8 +188,8 @@ export default function RecommendationsPage({
 
   const data = state.data;
   const picks = data?.recommendations ?? [];
-  const algorithmLabel =
-    data?.algorithm === "item_cf" ? "Item-based collaborative filtering" : "Popularity baseline";
+  const algorithmLabel = ALGORITHM_LABELS[data?.algorithm] ?? "Recommendations";
+  const algorithmNote = MODEL_NOTES[data?.algorithm] ?? "Ranked by the selected model.";
 
   return (
     <>
@@ -151,6 +219,15 @@ export default function RecommendationsPage({
         </div>
       ) : null}
 
+      {notice ? (
+        <div className="notice" role="status">
+          <span>{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss notice">
+            ×
+          </button>
+        </div>
+      ) : null}
+
       {state.status === "error" ? (
         <div className="panel empty">
           <h3>Recommendations are unavailable.</h3>
@@ -175,12 +252,26 @@ export default function RecommendationsPage({
 
       {data && picks.length > 0 ? (
         <div className="algo-bar">
+          <label className="inline-select model-select">
+            <span>Model</span>
+            <select
+              aria-label="Recommendation model"
+              value={algorithm}
+              onChange={(event) => setAlgorithm(event.target.value)}
+            >
+              {MODELS.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <span className="algo-dot" aria-hidden="true" />
           <span>{algorithmLabel}</span>
           {data.cold_start ? (
             <span className="muted">Rate a few films and this row starts reflecting you.</span>
           ) : (
-            <span className="muted">Similar viewers, weighted by your ratings.</span>
+            <span className="muted">{algorithmNote}</span>
           )}
           <span className="algo-count">
             {picks.length} {picks.length === 1 ? "pick" : "picks"}
@@ -191,13 +282,29 @@ export default function RecommendationsPage({
         </div>
       ) : null}
 
-      {data?.cold_start && picks.length > 0 ? (
+      {data?.needs_onboarding && picks.length > 0 ? (
+        <div className="panel onboarding">
+          <div>
+            <h3>Five ratings in, this becomes yours.</h3>
+            <p>
+              Until then the row leans on popularity and the genres of whatever you have rated.
+              A short onboarding set — a few well-known films across genres — gives the models a
+              real starting point.
+            </p>
+          </div>
+          <button type="button" className="button" onClick={onOnboard}>
+            Start onboarding
+          </button>
+        </div>
+      ) : null}
+
+      {data?.cold_start && !data?.needs_onboarding && picks.length > 0 ? (
         <div className="panel onboarding">
           <div>
             <h3>This is the crowd&apos;s list, not yours — yet.</h3>
             <p>
-              Rate five or six films you have opinions about. The moment you do, recommendations
-              switch from popularity to item-based collaborative filtering.
+              Your ratings do not agree on anything yet, so every model falls back to the
+              popularity baseline. Mixing a few high and low ratings will break the tie.
             </p>
           </div>
           <button type="button" className="button" onClick={onExplore}>
@@ -239,10 +346,13 @@ export default function RecommendationsPage({
               movie={recommendation.movie}
               rating={ratingsByMovie.get(recommendation.movie.id) ?? 0}
               onRate={rate}
+              onFeedback={react}
               busy={savingId === recommendation.movie.id}
+              feedbackBusy={feedbackBusyId === recommendation.movie.id}
               reason={recommendation.reason}
               predictedRating={recommendation.predicted_rating}
               evidence={recommendation.evidence}
+              badge={recommendation.discovery ? "Discovery" : undefined}
             />
           ))}
         </div>

@@ -9,7 +9,8 @@ const NAMES = {
   item_cf: "Item-based CF",
   user_cf: "User-based CF",
   svd: "SVD with fold-in",
-  hybrid: "Hybrid",
+  content: "Content-based",
+  hybrid: "Hybrid (CF + content)",
 };
 
 const PERCENT = new Intl.NumberFormat("en-US", {

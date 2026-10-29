@@ -26,7 +26,7 @@ export default function AuthPage({ initialMode = "login", message, onAuthenticat
         ? await api.signup({ email, displayName, password })
         : await api.login({ email, password });
       api.storeToken(result.access_token);
-      onAuthenticated(result.user);
+      onAuthenticated(result.user, { isNew: isSignup });
     } catch (err) {
       setError(err.message);
     } finally {

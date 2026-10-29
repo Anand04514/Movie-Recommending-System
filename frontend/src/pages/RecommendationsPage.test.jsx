@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../api.js", () => ({
   getRecommendations: vi.fn(),
   listGenres: vi.fn(),
+  sendFeedback: vi.fn(),
 }));
 
 import * as api from "../api.js";
@@ -59,6 +60,7 @@ function buildProps(overrides = {}) {
     onRate: vi.fn().mockResolvedValue(undefined),
     onRequireAuth: vi.fn(),
     onExplore: vi.fn(),
+    onOnboard: vi.fn(),
     ...overrides,
   };
 }
@@ -79,10 +81,16 @@ function emptyResponse() {
   };
 }
 
-function respond({ algorithm = "item_cf", coldStart = false, recommendations = [PICK] } = {}) {
+function respond({
+  algorithm = "item_cf",
+  coldStart = false,
+  recommendations = [PICK],
+  needsOnboarding = false,
+} = {}) {
   api.getRecommendations.mockResolvedValue({
     algorithm,
     cold_start: coldStart,
+    needs_onboarding: needsOnboarding,
     filters: {},
     candidates_considered: 24,
     recommendations,
@@ -123,14 +131,99 @@ describe("RecommendationsPage", () => {
     expect(api.getRecommendations).toHaveBeenCalledTimes(1);
   });
 
-  it("labels item-based CF and shows a reason with the predicted score", async () => {
+  it("asks for the hybrid model by default and labels the response", async () => {
     respond();
     renderPage();
 
     expect(await screen.findByText("Item-based collaborative filtering")).toBeInTheDocument();
+    expect(api.getRecommendations).toHaveBeenCalledWith(
+      expect.objectContaining({ algorithm: "hybrid" }),
+    );
     expect(screen.getByText(/Because you rated Heat 5★/)).toBeInTheDocument();
     expect(screen.getByText("Predicted 4.8★")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /this is the crowd/i })).not.toBeInTheDocument();
+  });
+
+  it("switches model without changing the filters", async () => {
+    const user = userEvent.setup();
+    respond({ algorithm: "svd" });
+    renderPage();
+
+    await screen.findByRole("heading", { name: "The Matrix" });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Recommendation model" }),
+      "svd",
+    );
+
+    await waitFor(() =>
+      expect(api.getRecommendations).toHaveBeenLastCalledWith(
+        expect.objectContaining({ algorithm: "svd", genres: [] }),
+      ),
+    );
+    // The one-line explanation must describe the model that actually answered.
+    expect(screen.getByText(/^Matrix factorization/)).toBeInTheDocument();
+    expect(screen.queryByText(/^Films that people who rated/)).not.toBeInTheDocument();
+  });
+
+  it("removes a film immediately when it is rejected", async () => {
+    const user = userEvent.setup();
+    api.sendFeedback.mockResolvedValue({ movie_id: PICK.movie.id, action: "rejected" });
+    respond();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "The Matrix" });
+    await user.click(screen.getByRole("button", { name: "Not interested in The Matrix" }));
+
+    expect(api.sendFeedback).toHaveBeenCalledWith(PICK.movie.id, "rejected", "item_cf");
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "The Matrix" })).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText(/The Matrix will not be shown again/)).toBeInTheDocument();
+  });
+
+  it("likes a pick and keeps the list failure-free", async () => {
+    const user = userEvent.setup();
+    api.sendFeedback.mockResolvedValue({ movie_id: PICK.movie.id, action: "liked" });
+    respond();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "The Matrix" });
+    await user.click(screen.getByRole("button", { name: "Like The Matrix" }));
+
+    expect(api.sendFeedback).toHaveBeenCalledWith(PICK.movie.id, "liked", "item_cf");
+    expect(await screen.findByText(/we will look for more like it/)).toBeInTheDocument();
+  });
+
+  it("points a new user at onboarding", async () => {
+    const user = userEvent.setup();
+    respond({ needsOnboarding: true });
+    const props = renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "Five ratings in, this becomes yours." }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start onboarding" }));
+    expect(props.onOnboard).toHaveBeenCalledTimes(1);
+  });
+
+  it("labels a back-of-list pick as discovery", async () => {
+    respond({
+      recommendations: [
+        PICK,
+        {
+          ...PICK,
+          movie: { ...MOVIE, id: 99, title: "A Weird Little Film", genres: ["Horror"] },
+          discovery: true,
+          reason: "Discovery — a Horror pick outside your usual Drama",
+        },
+      ],
+    });
+    renderPage();
+
+    expect(await screen.findByText("Discovery")).toBeInTheDocument();
+    expect(
+      screen.getByText(/outside your usual Drama/),
+    ).toBeInTheDocument();
   });
 
   it("shows the runner-up ratings behind a pick", async () => {

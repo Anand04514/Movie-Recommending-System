@@ -2,21 +2,29 @@
 
 from __future__ import annotations
 
+import logging
 import statistics
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.db import get_db
 from backend.app.deps import get_current_user
-from backend.app.models import ModelRun, Movie, Rating, User
+from backend.app.models import Feedback, ModelRun, Movie, Rating, RecommendationLog, User
 from backend.app.recommendations import (
     ArtifactsUnavailable,
+    ContentService,
+    HybridService,
     RecommendationBatch,
     RecommendationService,
+    SvdService,
     UserCfService,
+    get_content_recommender,
+    get_hybrid_recommender,
     get_recommender,
+    get_svd_recommender,
     get_user_cf_recommender,
 )
 from backend.app.schemas import (
@@ -30,14 +38,23 @@ from backend.app.schemas import (
     model_run_to_out,
     movie_to_out,
 )
+from recsys.serendipity import (
+    DiscoveryCandidate,
+    discovery_slots,
+    favourite_genres,
+    pick_discovery,
+)
 from recsys.titles import split_genres
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["recommendations"])
 
-SUPPORTED_ALGORITHMS = ("item_cf", "user_cf")
+SUPPORTED_ALGORITHMS = ("item_cf", "user_cf", "svd", "content", "hybrid")
 # With filters on, score a wider pool so the list can still be filled with matching films.
 FILTERED_POOL_LIMIT = 200
 MAX_EVIDENCE = 3
+ONBOARDING_MIN_RATINGS = 5
 
 
 def _parse_genres(raw: str) -> list[str]:
@@ -102,6 +119,7 @@ def _build_items(
     year_max: int | None,
     min_score: float | None,
     limit: int,
+    excluded: set[int] | None = None,
 ) -> tuple[list[RecommendationOut], int]:
     """Resolve movie rows, apply the filters and build response objects with their evidence."""
     wanted = {item.movie_id for item in batch.items}
@@ -120,6 +138,9 @@ def _build_items(
         movie = movies.get(item.movie_id)
         if movie is None:
             # The catalog may be older or newer than the trained artifacts; skip rather than 500.
+            continue
+        if excluded and movie.id in excluded:
+            # Liked or rejected on the page: either way we already have this user's verdict.
             continue
         considered += 1
         if not _matches(
@@ -169,29 +190,151 @@ def _user_ratings(db: Session, user: User) -> dict[int, float]:
     return {int(movie_id): float(value) for movie_id, value in rows}
 
 
+def _feedback_exclusions(db: Session, user: User) -> set[int]:
+    """Films the user already judged on the page; liked and rejected are both done deals."""
+    rows = db.scalars(
+        select(Feedback.movie_id).where(
+            Feedback.user_id == user.id,
+            Feedback.action.in_(("liked", "rejected")),
+        )
+    ).all()
+    return {int(movie_id) for movie_id in rows}
+
+
+def _favourite_genres(
+    db: Session, ratings_by_movie: dict[int, float]
+) -> set[str]:
+    if not ratings_by_movie:
+        return set()
+    rows = db.execute(
+        select(Movie.id, Movie.genres).where(Movie.id.in_(ratings_by_movie))
+    ).all()
+    rated = [
+        (tuple(split_genres(genres or "")), ratings_by_movie[int(movie_id)])
+        for movie_id, genres in rows
+    ]
+    return favourite_genres(rated)
+
+
+def _apply_discovery(
+    items: list[RecommendationOut],
+    *,
+    db: Session,
+    ratings_by_movie: dict[int, float],
+    limit: int,
+    enabled: bool,
+) -> list[RecommendationOut]:
+    """Relabel a small tail slice as discovery when it genuinely steps outside the usual taste."""
+    slots = discovery_slots(limit, ratings_count=len(ratings_by_movie))
+    if not enabled or slots == 0 or not items:
+        return items
+    favourites = _favourite_genres(db, ratings_by_movie)
+    if not favourites:
+        return items
+
+    tail = items[-max(slots * 3, 4) :]
+    candidates = [
+        DiscoveryCandidate(
+            movie_id=item.movie.id,
+            score=item.predicted_rating,
+            genres=tuple(item.movie.genres),
+        )
+        for item in tail
+    ]
+    picks = pick_discovery(candidates, favourite_genres=favourites, slots=slots)
+    if not picks:
+        return items
+
+    chosen = {pick.movie_id for pick in picks}
+    label = ", ".join(sorted(favourites)[:2]).title()
+    marked: list[RecommendationOut] = []
+    for item in items:
+        if item.movie.id in chosen:
+            genre = item.movie.genres[0] if item.movie.genres else "film"
+            item = item.model_copy(
+                update={
+                    "discovery": True,
+                    "reason": (
+                        f"Discovery — a {genre} pick outside your usual {label}"
+                    ),
+                }
+            )
+        marked.append(item)
+    return marked
+
+
+def _log_impressions(
+    db: Session, user: User, batch: RecommendationBatch, items: list[RecommendationOut]
+) -> None:
+    """Record what was shown; analytics must never take the page down."""
+    if not items:
+        return
+    db.add_all(
+        [
+            RecommendationLog(
+                user_id=user.id,
+                movie_id=item.movie.id,
+                algorithm=batch.algorithm,
+                score=float(item.score),
+            )
+            for item in items
+        ]
+    )
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.warning("Could not record recommendation impressions", exc_info=True)
+
+
 @router.get("/recommend", response_model=RecommendationResponse)
 def recommend(
     limit: int = Query(10, ge=1, le=50),
+    algorithm: str = Query(
+        "item_cf",
+        description="item_cf, user_cf, svd, content or hybrid (the tuned blend).",
+    ),
     genres: str = Query("", max_length=200, description="Comma-separated; any match qualifies."),
     year_min: int | None = Query(None, ge=1870, le=2100),
     year_max: int | None = Query(None, ge=1870, le=2100),
     min_score: float | None = Query(None, ge=0.5, le=5.0, description="Minimum predicted rating."),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    service: RecommendationService = Depends(get_recommender),
+    item_service: RecommendationService = Depends(get_recommender),
+    user_service: UserCfService = Depends(get_user_cf_recommender),
+    content_service: ContentService = Depends(get_content_recommender),
+    svd_service: SvdService = Depends(get_svd_recommender),
+    hybrid_service: HybridService = Depends(get_hybrid_recommender),
 ) -> RecommendationResponse:
     if year_min is not None and year_max is not None and year_min > year_max:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="year_min must not exceed year_max",
         )
+    if algorithm not in SUPPORTED_ALGORITHMS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"algorithm must be one of {list(SUPPORTED_ALGORITHMS)}",
+        )
+
     selected = _parse_genres(genres)
     filtered = bool(selected) or None not in (year_min, year_max) or min_score is not None
-    pool = min(max(limit * 8, limit), FILTERED_POOL_LIMIT) if filtered else limit
-
     ratings_by_movie = _user_ratings(db, user)
+    excluded = _feedback_exclusions(db, user)
+    if filtered:
+        pool = FILTERED_POOL_LIMIT
+    else:
+        pool = min(limit + len(excluded) + 2, FILTERED_POOL_LIMIT)
+
+    services = {
+        "item_cf": item_service,
+        "user_cf": user_service,
+        "svd": svd_service,
+        "content": content_service,
+        "hybrid": hybrid_service,
+    }
     try:
-        batch = service.recommend(list(ratings_by_movie.items()), limit=pool)
+        batch = services[algorithm].recommend(list(ratings_by_movie.items()), limit=pool)
     except ArtifactsUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -206,7 +349,17 @@ def recommend(
         year_max=year_max,
         min_score=min_score,
         limit=limit,
+        excluded=excluded,
     )
+    items = _apply_discovery(
+        items,
+        db=db,
+        ratings_by_movie=ratings_by_movie,
+        limit=limit,
+        enabled=not batch.cold_start and batch.algorithm != "popularity",
+    )
+    _log_impressions(db, user, batch, items)
+
     return RecommendationResponse(
         algorithm=batch.algorithm,
         cold_start=batch.cold_start,
@@ -214,6 +367,7 @@ def recommend(
             genres=selected, year_min=year_min, year_max=year_max, min_score=min_score
         ),
         candidates_considered=considered,
+        needs_onboarding=len(ratings_by_movie) < ONBOARDING_MIN_RATINGS,
         recommendations=items,
     )
 
@@ -227,6 +381,9 @@ def compare_algorithms(
     db: Session = Depends(get_db),
     item_service: RecommendationService = Depends(get_recommender),
     user_service: UserCfService = Depends(get_user_cf_recommender),
+    content_service: ContentService = Depends(get_content_recommender),
+    svd_service: SvdService = Depends(get_svd_recommender),
+    hybrid_service: HybridService = Depends(get_hybrid_recommender),
 ) -> ComparisonResponse:
     for name in (left, right):
         if name not in SUPPORTED_ALGORITHMS:
@@ -241,14 +398,20 @@ def compare_algorithms(
         )
 
     ratings_by_movie = _user_ratings(db, user)
-    services: dict[str, RecommendationService | UserCfService] = {
+    excluded = _feedback_exclusions(db, user)
+    services = {
         "item_cf": item_service,
         "user_cf": user_service,
+        "svd": svd_service,
+        "content": content_service,
+        "hybrid": hybrid_service,
     }
 
     def run(name: str) -> AlgorithmComparison:
         try:
-            batch = services[name].recommend(list(ratings_by_movie.items()), limit=limit)
+            batch = services[name].recommend(
+                list(ratings_by_movie.items()), limit=limit + len(excluded) + 2
+            )
         except ArtifactsUnavailable as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -262,6 +425,7 @@ def compare_algorithms(
             year_max=None,
             min_score=None,
             limit=limit,
+            excluded=excluded,
         )
         return AlgorithmComparison(
             algorithm=batch.algorithm,

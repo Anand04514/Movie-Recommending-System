@@ -12,11 +12,31 @@ const METHOD = {
     name: "User-based CF",
     blurb: "Finds viewers whose ratings look like yours, then borrows what they loved.",
   },
+  svd: {
+    name: "SVD with fold-in",
+    blurb: "Latent taste factors fitted offline, folded onto your ratings per request.",
+  },
+  content: {
+    name: "Content-based",
+    blurb: "Matches genres, decades and tags — works even for films nobody has rated.",
+  },
+  hybrid: {
+    name: "Hybrid",
+    blurb: "The validation-tuned blend of collaborative filtering and content.",
+  },
   popularity: {
     name: "Popularity baseline",
     blurb: "What the crowd watches most — the floor any personal model has to beat.",
   },
 };
+
+const ALGORITHMS = [
+  { id: "item_cf", label: "Item-based CF" },
+  { id: "user_cf", label: "User-based CF" },
+  { id: "svd", label: "SVD with fold-in" },
+  { id: "content", label: "Content-based" },
+  { id: "hybrid", label: "Hybrid" },
+];
 
 const LIMITS = [5, 10, 15];
 
@@ -72,6 +92,8 @@ function Column({ side, sideKey, overlap }) {
 
 export default function ComparePage({ user, onRequireAuth, onExplore }) {
   const [limit, setLimit] = useState(10);
+  const [left, setLeft] = useState("item_cf");
+  const [right, setRight] = useState("user_cf");
   const [reloadKey, setReloadKey] = useState(0);
   const [state, setState] = useState({ status: "idle", data: null, error: null });
 
@@ -88,7 +110,7 @@ export default function ComparePage({ user, onRequireAuth, onExplore }) {
     }));
 
     api
-      .compareAlgorithms({ limit, signal: controller.signal })
+      .compareAlgorithms({ limit, left, right, signal: controller.signal })
       .then((data) => setState({ status: "ready", data, error: null }))
       .catch((error) => {
         if (error.name === "AbortError") return;
@@ -96,7 +118,17 @@ export default function ComparePage({ user, onRequireAuth, onExplore }) {
       });
 
     return () => controller.abort();
-  }, [user, limit, reloadKey]);
+  }, [user, limit, left, right, reloadKey]);
+
+  function chooseLeft(value) {
+    if (value === right) setRight(left);
+    setLeft(value);
+  }
+
+  function chooseRight(value) {
+    if (value === left) setLeft(right);
+    setRight(value);
+  }
 
   if (!user) {
     return (
@@ -127,6 +159,34 @@ export default function ComparePage({ user, onRequireAuth, onExplore }) {
       </section>
 
       <div className="compare-controls">
+        <label className="inline-select">
+          <span>Left</span>
+          <select
+            aria-label="Left algorithm"
+            value={left}
+            onChange={(event) => chooseLeft(event.target.value)}
+          >
+            {ALGORITHMS.map((algorithm) => (
+              <option key={algorithm.id} value={algorithm.id}>
+                {algorithm.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="inline-select">
+          <span>Right</span>
+          <select
+            aria-label="Right algorithm"
+            value={right}
+            onChange={(event) => chooseRight(event.target.value)}
+          >
+            {ALGORITHMS.map((algorithm) => (
+              <option key={algorithm.id} value={algorithm.id}>
+                {algorithm.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="inline-select">
           <span>List length</span>
           <select value={limit} onChange={(event) => setLimit(Number(event.target.value))}>

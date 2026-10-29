@@ -32,8 +32,12 @@ import pandas as pd
 from scipy import sparse
 
 from recsys.baselines import damped_item_mean, global_mean, item_counts_and_sums, item_means
+from recsys.content import DEFAULT_PREDICTION_SLOPE, ContentFeatures
+from recsys.data import build_csr, chronological_split
+from recsys.hybrid import blend_matrix, combine_predictions
 from recsys.item_cf import ItemNeighbors, mean_center
 from recsys.metrics import RankingMetrics, average_ranking_metrics, mae, rmse
+from recsys.svd import SvdModel
 from recsys.user_cf import UserNeighbors
 
 DEFAULT_RELEVANCE_THRESHOLD = 4.0
@@ -269,6 +273,8 @@ class FoldInScorer:
         structure: sparse.csr_matrix,
         damping: float,
         params: dict[str, object],
+        user_means: np.ndarray,
+        fallback_predictions: np.ndarray,
     ) -> None:
         if kind not in {"item", "user"}:
             raise ValueError("kind must be 'item' or 'user'")
@@ -282,6 +288,8 @@ class FoldInScorer:
         self.damping = float(damping)
         self.params = params
         self.n_items = int(centered.shape[1])
+        self.user_means = np.asarray(user_means, dtype="float64")
+        self.fallback_predictions = np.asarray(fallback_predictions, dtype="float64")
 
     def blocks(
         self, users: np.ndarray
@@ -296,6 +304,183 @@ class FoldInScorer:
         dense_scores = np.asarray(scores.toarray(), dtype="float32")
         dense_weights = np.asarray(weights.toarray(), dtype="float32")
         return dense_scores, dense_weights, dense_scores
+
+    def predicted_for(self, users: np.ndarray) -> np.ndarray:
+        """Calibrated predicted ratings, using the same shrinkage rule as the API.
+
+        The raw block scores are evidence sums, not ratings; blending them directly into a
+        hybrid prediction inflates it by an order of magnitude.
+        """
+        users = np.asarray(users, dtype="int64")
+        scores, weights, _ = self.blocks(users)
+        assert weights is not None  # fold-in always reports support
+        means = self.user_means[users][:, None]
+        filled = means + np.divide(
+            scores,
+            weights + self.damping,
+            out=np.zeros_like(scores, dtype="float64"),
+            where=weights > 0,
+        )
+        fallback = np.broadcast_to(self.fallback_predictions[None, :], scores.shape)
+        return np.clip(np.where(weights > 0, filled, fallback), 0.5, 5.0)
+
+
+class SvdScorer:
+    """Biased matrix factorization for users who are already in the training matrix.
+
+    The API folds new users in; evaluation users *are* training users, so their factor rows are
+    read straight out of the model. Predictions are clamped to the rating range, while ranking
+    keeps the unclamped score so ties at five stars do not destroy the ordering.
+    """
+
+    supports_ranking = True
+    name = "svd"
+
+    def __init__(self, model: SvdModel) -> None:
+        self.model = model
+        self.n_items = model.n_items
+        self.params: dict[str, object] = {
+            "rank": model.rank,
+            "bias_regularisation": model.bias_regularisation,
+            "factor_regularisation": model.factor_regularisation,
+        }
+
+    def blocks(
+        self, users: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+        ranking = self.model.predict_for_users(np.asarray(users, dtype="int64"))
+        return np.clip(ranking, 0.5, 5.0), None, ranking
+
+
+class ContentScorer:
+    """Genre, decade and tag profiles scored against the model-universe feature rows."""
+
+    supports_ranking = True
+    name = "content"
+
+    def __init__(
+        self,
+        train: sparse.spmatrix,
+        item_features: sparse.spmatrix,
+        *,
+        slope: float = DEFAULT_PREDICTION_SLOPE,
+        features: ContentFeatures | None = None,
+    ) -> None:
+        if slope <= 0:
+            raise ValueError("slope must be positive")
+        self.train = train.tocsr()
+        self.item_features = sparse.csr_matrix(item_features, dtype="float64")
+        if self.item_features.shape[0] != self.train.shape[1]:
+            raise ValueError("item_features must have one row per model item")
+        counts = np.diff(self.train.indptr)
+        sums = np.asarray(self.train.sum(axis=1)).ravel()
+        self.user_means = np.zeros(self.train.shape[0], dtype="float64")
+        np.divide(sums, counts, out=self.user_means, where=counts > 0)
+        self.slope = float(slope)
+        self.n_items = int(self.train.shape[1])
+        self.params: dict[str, object] = {
+            "features": int(self.item_features.shape[1]),
+            "prediction_slope": self.slope,
+            "catalogue_movies": features.n_movies if features is not None else None,
+        }
+        if features is not None:
+            self.params["feature_kinds"] = {
+                "genres": sum(1 for name in features.feature_names if name.startswith("genre:")),
+                "decades": sum(1 for name in features.feature_names if name.startswith("decade:")),
+                "tags": sum(1 for name in features.feature_names if name.startswith("tag:")),
+            }
+
+    def blocks(
+        self, users: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+        block = self.train[users]
+        row_means = np.repeat(self.user_means[users], np.diff(block.indptr))
+        centred = np.clip(block.data - row_means, 0.0, None)
+
+        # A user whose ratings are all equal has no within-user deviation; fall back to
+        # "above neutral" so their genres still form a profile (the same rule the API uses).
+        weights = block.copy()
+        weights.data = centred
+        totals = np.asarray(weights.sum(axis=1)).ravel()
+        uniform = totals <= 0
+        if uniform.any():
+            fallback = np.clip(block.data - 3.0, 0.0, None)
+            row_uniform = np.repeat(uniform, np.diff(block.indptr))
+            weights.data = np.where(row_uniform, fallback, centred)
+
+        profiles = sparse.csr_matrix(weights @ self.item_features, dtype="float64")
+        norms = np.sqrt(np.asarray(profiles.multiply(profiles).sum(axis=1)).ravel())
+        inverse = np.zeros_like(norms)
+        np.divide(1.0, norms, out=inverse, where=norms > 0)
+        profiles = (sparse.diags(inverse) @ profiles).tocsr()
+
+        scores = np.asarray((profiles @ self.item_features.T).toarray(), dtype="float32")
+        predictions = np.clip(
+            self.user_means[np.asarray(users, dtype="int64")][:, None] + self.slope * scores,
+            0.5,
+            5.0,
+        )
+        # A candidate with zero overlap is not evidence for this user; like the serving path,
+        # only positively-scored items enter the ranking.
+        ranking = np.where(scores > 0, scores, -np.inf).astype("float32")
+        return predictions, None, ranking
+
+
+class HybridScorer:
+    """A tuned weighted blend of a collaborative scorer and the content scorer."""
+
+    supports_ranking = True
+    name = "hybrid"
+
+    def __init__(
+        self,
+        collaborative: Scorer,
+        content: Scorer,
+        *,
+        weight: float,
+    ) -> None:
+        if not 0.0 <= weight <= 1.0:
+            raise ValueError("weight must be between 0 and 1")
+        self.collaborative = collaborative
+        self.content = content
+        self.weight = float(weight)
+        self.n_items = collaborative.n_items
+        self.params: dict[str, object] = {
+            "collaborative": collaborative.name,
+            "content": content.name,
+            "collaborative_weight": self.weight,
+        }
+
+    def blocks(
+        self, users: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
+        collaborative_predictions = self._predicted(self.collaborative, users)
+        content_predictions = self._predicted(self.content, users)
+        _, _, collaborative_ranking = self.collaborative.blocks(users)
+        _, _, content_ranking = self.content.blocks(users)
+
+        ranking = blend_matrix(
+            collaborative_ranking,
+            content_ranking,
+            weight=self.weight,
+        )
+        # A blend of two zeros is not support; the API has the same rule.
+        ranking = np.where(ranking > 0, ranking, -np.inf).astype("float32")
+        predictions = combine_predictions(
+            collaborative_predictions,
+            content_predictions,
+            weight=self.weight,
+            available_collaborative=np.isfinite(collaborative_ranking),
+            available_content=np.isfinite(content_ranking),
+        )
+        return predictions, None, ranking
+
+    @staticmethod
+    def _predicted(scorer: Scorer, users: np.ndarray) -> np.ndarray:
+        method = getattr(scorer, "predicted_for", None)
+        if callable(method):
+            return np.asarray(method(users), dtype="float32")
+        return np.asarray(scorer.blocks(users)[0], dtype="float32")
 
 
 @dataclass(frozen=True)
@@ -486,8 +671,18 @@ def default_scorers(
     item_damping: float = 4.0,
     user_damping: float = 4.0,
     item_mean_damping: float = 10.0,
+    svd_model: SvdModel | None = None,
+    content_features: ContentFeatures | None = None,
+    model_movie_ids: np.ndarray | None = None,
+    hybrid_weight: float = 0.65,
+    hybrid_base: str = "item_cf",
 ) -> list[Scorer]:
-    """The five methods the plan asks about, in report order."""
+    """Every method the plan asks about, in report order.
+
+    SVD and content are only added when their artifacts are supplied; the hybrid needs item-CF
+    and raw content features together. ``model_movie_ids`` aligns the catalog feature rows to the
+    model matrix's item order and is required with ``content_features``.
+    """
     counts, _ = item_counts_and_sums(train)
     mu = global_mean(train)
     damped = damped_item_mean(train, item_mean_damping)
@@ -511,42 +706,184 @@ def default_scorers(
         ),
     ]
 
+    if hybrid_base not in {"item_cf", "user_cf"}:
+        raise ValueError("hybrid_base must be 'item_cf' or 'user_cf'")
+
+    train_counts = np.diff(train.indptr)
+    train_sums = np.asarray(train.sum(axis=1)).ravel()
+    user_means = np.zeros(train.shape[0], dtype="float64")
+    np.divide(train_sums, train_counts, out=user_means, where=train_counts > 0)
+    fallback = damped_item_mean(train, item_mean_damping)
+
+    item_scorer: FoldInScorer | None = None
+    user_scorer: FoldInScorer | None = None
     if item_neighbors is not None or user_neighbors is not None:
         centered, _ = mean_center(train)
         mask = train.copy()
         mask.data = np.ones_like(mask.data)
         mask = mask.astype("float64")
         if item_neighbors is not None:
-            scorers.append(
-                FoldInScorer(
-                    "item_cf",
-                    kind="item",
-                    centered=centered,
-                    mask=mask,
-                    structure=item_neighbors.similarity_matrix(),
-                    damping=item_damping,
-                    params={
-                        "k": int(item_neighbors.indices.shape[1]),
-                        "damping": item_damping,
-                    },
-                )
+            item_scorer = FoldInScorer(
+                "item_cf",
+                kind="item",
+                centered=centered,
+                mask=mask,
+                structure=item_neighbors.similarity_matrix(),
+                damping=item_damping,
+                params={
+                    "k": int(item_neighbors.indices.shape[1]),
+                    "damping": item_damping,
+                },
+                user_means=user_means,
+                fallback_predictions=fallback,
             )
+            scorers.append(item_scorer)
         if user_neighbors is not None:
-            scorers.append(
-                FoldInScorer(
-                    "user_cf",
-                    kind="user",
-                    centered=centered,
-                    mask=mask,
-                    structure=user_neighbors.similarity_matrix(),
-                    damping=user_damping,
-                    params={
-                        "k": int(user_neighbors.indices.shape[1]),
-                        "damping": user_damping,
-                    },
-                )
+            user_scorer = FoldInScorer(
+                "user_cf",
+                kind="user",
+                centered=centered,
+                mask=mask,
+                structure=user_neighbors.similarity_matrix(),
+                damping=user_damping,
+                params={
+                    "k": int(user_neighbors.indices.shape[1]),
+                    "damping": user_damping,
+                },
+                user_means=user_means,
+                fallback_predictions=fallback,
             )
+            scorers.append(user_scorer)
+
+    if svd_model is not None:
+        if svd_model.n_users != train.shape[0]:
+            raise ValueError("the SVD model was trained on a different number of users")
+        scorers.append(SvdScorer(svd_model))
+
+    content_scorer: ContentScorer | None = None
+    if content_features is not None:
+        if model_movie_ids is None:
+            raise ValueError("model_movie_ids is required with content_features")
+        item_features = content_features.rows_for(np.asarray(model_movie_ids, dtype="int64"))
+        content_scorer = ContentScorer(train, item_features, features=content_features)
+        scorers.append(content_scorer)
+
+    collaborative_base = item_scorer if hybrid_base == "item_cf" else user_scorer
+    if collaborative_base is not None and content_scorer is not None:
+        scorers.append(HybridScorer(collaborative_base, content_scorer, weight=hybrid_weight))
     return scorers
+
+
+def tune_hybrid_weight(
+    split: SplitData,
+    *,
+    collaborative: Scorer,
+    content: Scorer,
+    weights: Sequence[float],
+    k: int = 10,
+    chunk_size: int = 512,
+) -> tuple[float, list[MethodOutcome]]:
+    """Score the blend at each candidate weight on a validation split and pick the best NDCG.
+
+    Call this with a split carved out of the *training* data, never the test split: the tuned
+    weight must not see the pairs the final report will score.
+    """
+    if not weights:
+        raise ValueError("weights must not be empty")
+    fallback = damped_item_mean(split.train)
+    outcomes: list[MethodOutcome] = []
+    for weight in weights:
+        scorer = HybridScorer(collaborative, content, weight=weight)
+        outcomes.append(
+            evaluate_method(
+                scorer,
+                split,
+                fallback_predictions=fallback,
+                k=k,
+                chunk_size=chunk_size,
+                track_memory=False,
+            )
+        )
+    best = max(
+        outcomes,
+        key=lambda outcome: (outcome.ndcg_at_k or 0.0, outcome.precision_at_k or 0.0),
+    )
+    return float(best.params["collaborative_weight"]), outcomes
+
+
+def load_validation_split(
+    processed_dir: str | Path,
+    *,
+    users: int = 1_500,
+    validation_fraction: float = 0.15,
+    seed: int = 42,
+    relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
+) -> SplitData:
+    """Carve a chronological validation slice out of the *training* ratings.
+
+    The test split stays sealed. Each sampled user's most recent ``validation_fraction`` of their
+    training ratings becomes the target, and the matrix is rebuilt without them, so the weight is
+    tuned on pairs the final evaluation will never touch.
+    """
+    processed = Path(processed_dir)
+    train_path = processed / "ratings_train.parquet"
+    if not train_path.is_file():
+        raise FileNotFoundError(
+            f"missing {train_path.name}; run scripts/prepare_data.py first"
+        )
+    if users < 1:
+        raise ValueError("users must be positive")
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be between 0 and 1")
+
+    columns = ["user_index", "movie_index", "rating", "timestamp"]
+    ratings = pd.read_parquet(train_path, columns=columns)
+    if ratings.empty:
+        raise ValueError("the training split is empty")
+    candidates = np.unique(ratings["user_index"].to_numpy(dtype="int64"))
+    if users < candidates.size:
+        rng = np.random.default_rng(seed)
+        chosen = np.sort(rng.choice(candidates, size=users, replace=False))
+    else:
+        chosen = candidates
+    ratings = ratings[ratings["user_index"].isin(chosen)].reset_index(drop=True)
+
+    # ``chronological_split`` works on raw MovieLens column names; the processed split keeps both
+    # raw ids and compact indexes, so the rename is only for the helper's benefit.
+    ordered = ratings.rename(columns={"user_index": "userId", "movie_index": "movieId"})
+    earlier, later = chronological_split(ordered, validation_fraction)
+    earlier = earlier.reset_index(drop=True)
+    later = later.reset_index(drop=True)
+
+    # Keep the full model dimensions when the id maps are present: SVD factors and content rows
+    # are indexed against the whole universe, not just the sampled users' slice of it.
+    user_map = processed / "user_id_map.parquet"
+    movie_map = processed / "movie_id_map.parquet"
+    n_users = (
+        len(pd.read_parquet(user_map, columns=["user_index"]))
+        if user_map.is_file()
+        else int(ratings["user_index"].max()) + 1
+    )
+    n_items = (
+        len(pd.read_parquet(movie_map, columns=["movie_index"]))
+        if movie_map.is_file()
+        else int(ratings["movie_index"].max()) + 1
+    )
+    training = earlier.rename(
+        columns={"userId": "user_index", "movieId": "movie_index"}
+    )
+    validation = later.rename(
+        columns={"userId": "user_index", "movieId": "movie_index"}
+    )
+    matrix = build_csr(training, n_users=n_users, n_movies=n_items)
+    return split_from_arrays(
+        matrix,
+        validation["user_index"].to_numpy(dtype="int64"),
+        validation["movie_index"].to_numpy(dtype="int64"),
+        validation["rating"].to_numpy(dtype="float64"),
+        evaluated_users=chosen,
+        relevance_threshold=relevance_threshold,
+    )
 
 
 def render_markdown_table(outcomes: Sequence[MethodOutcome]) -> str:

@@ -81,6 +81,30 @@ describe("MovieCard", () => {
     expect(onRemove).toHaveBeenCalledWith(MOVIE);
   });
 
+  it("offers like and reject actions only when feedback is wired up", async () => {
+    const user = userEvent.setup();
+    const onFeedback = vi.fn();
+    const { rerender } = render(<MovieCard movie={MOVIE} />);
+
+    expect(
+      screen.queryByRole("button", { name: "Not interested in The Matrix" }),
+    ).not.toBeInTheDocument();
+
+    rerender(<MovieCard movie={MOVIE} onFeedback={onFeedback} />);
+    await user.click(screen.getByRole("button", { name: "Like The Matrix" }));
+    await user.click(screen.getByRole("button", { name: "Not interested in The Matrix" }));
+
+    expect(onFeedback).toHaveBeenNthCalledWith(1, MOVIE, "liked");
+    expect(onFeedback).toHaveBeenNthCalledWith(2, MOVIE, "rejected");
+  });
+
+  it("disables feedback while the reaction is saving", () => {
+    render(<MovieCard movie={MOVIE} onFeedback={vi.fn()} feedbackBusy />);
+
+    expect(screen.getByRole("button", { name: "Like The Matrix" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Not interested in The Matrix" })).toBeDisabled();
+  });
+
   it("locks the rating widget while a save is in flight", () => {
     render(<MovieCard movie={MOVIE} busy onRate={vi.fn()} />);
 

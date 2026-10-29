@@ -129,6 +129,8 @@ class RecommendationOut(BaseModel):
     reason: str
     evidence: list[RecommendationEvidence] = []
     neighbors_rated: int | None = None
+    # A lower-confidence, out-of-profile pick reserved at the back of a full list.
+    discovery: bool = False
 
 
 class RecommendationFiltersApplied(BaseModel):
@@ -138,16 +140,30 @@ class RecommendationFiltersApplied(BaseModel):
     min_score: float | None = None
 
 
+ALGORITHM_NAMES = (
+    "item_cf",
+    "user_cf",
+    "svd",
+    "content",
+    "hybrid",
+    "popularity",
+)
+AlgorithmName = Literal[
+    "item_cf", "user_cf", "svd", "content", "hybrid", "popularity"
+]
+
+
 class RecommendationResponse(BaseModel):
-    algorithm: Literal["item_cf", "user_cf", "popularity"]
+    algorithm: AlgorithmName
     cold_start: bool
     filters: RecommendationFiltersApplied
     candidates_considered: int
+    needs_onboarding: bool = False
     recommendations: list[RecommendationOut]
 
 
 class AlgorithmComparison(BaseModel):
-    algorithm: Literal["item_cf", "user_cf", "popularity"]
+    algorithm: AlgorithmName
     cold_start: bool
     recommendations: list[RecommendationOut]
 
@@ -177,6 +193,26 @@ class SearchResponse(BaseModel):
     normalized_query: str
     count: int
     results: list[MovieOut]
+
+
+class OnboardingResponse(BaseModel):
+    """A small, diverse set of well-known films for a new user to rate."""
+
+    target: int = 5
+    movies: list[MovieOut]
+
+
+class FeedbackCreate(BaseModel):
+    movie_id: int = Field(gt=0)
+    action: Literal["liked", "rejected", "clicked"]
+    source_algorithm: str | None = Field(default=None, max_length=32)
+
+
+class FeedbackOut(BaseModel):
+    movie_id: int
+    action: str
+    source_algorithm: str | None
+    created_at: datetime
 
 
 def normalized_query_text(query: str) -> str:

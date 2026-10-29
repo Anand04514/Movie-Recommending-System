@@ -113,6 +113,7 @@ export function deleteRating(movieId) {
 
 export function getRecommendations({
   limit = 12,
+  algorithm = null,
   genres = [],
   yearMin = null,
   yearMax = null,
@@ -120,6 +121,7 @@ export function getRecommendations({
   signal,
 } = {}) {
   const params = new URLSearchParams({ limit: String(limit) });
+  if (algorithm) params.set("algorithm", algorithm);
   if (genres.length > 0) params.set("genres", genres.join(","));
   if (yearMin != null) params.set("year_min", String(yearMin));
   if (yearMax != null) params.set("year_max", String(yearMax));
@@ -131,8 +133,27 @@ export function listGenres({ signal } = {}) {
   return request("/movies/genres", { signal });
 }
 
-export function compareAlgorithms({ limit = 10, signal } = {}) {
-  return request(`/compare?limit=${limit}`, { auth: true, signal });
+export function compareAlgorithms({ limit = 10, left = null, right = null, signal } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (left) params.set("left", left);
+  if (right) params.set("right", right);
+  return request(`/compare?${params.toString()}`, { auth: true, signal });
+}
+
+export function getOnboarding({ limit = 12, signal } = {}) {
+  return request(`/onboarding?limit=${limit}`, { signal });
+}
+
+export function sendFeedback(movieId, action, sourceAlgorithm = null) {
+  return request("/feedback", {
+    method: "POST",
+    body: {
+      movie_id: movieId,
+      action,
+      source_algorithm: sourceAlgorithm,
+    },
+    auth: true,
+  });
 }
 
 export function listModelRuns({ signal } = {}) {

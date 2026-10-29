@@ -49,7 +49,9 @@ export default function MovieCard({
   rating = 0,
   onRate,
   onRemove,
+  onFeedback,
   busy = false,
+  feedbackBusy = false,
   reason,
   predictedRating,
   badge,
@@ -119,6 +121,30 @@ export default function MovieCard({
           </button>
         ) : null}
       </div>
+
+      {onFeedback ? (
+        <div className="feedback-row">
+          <span className="feedback-prompt">More like this?</span>
+          <button
+            type="button"
+            className="reaction is-negative"
+            onClick={() => onFeedback(movie, "rejected")}
+            disabled={busy || feedbackBusy}
+            aria-label={`Not interested in ${movie.title}`}
+          >
+            Not for me
+          </button>
+          <button
+            type="button"
+            className="reaction is-positive"
+            onClick={() => onFeedback(movie, "liked")}
+            disabled={busy || feedbackBusy}
+            aria-label={`Like ${movie.title}`}
+          >
+            ♥ Like
+          </button>
+        </div>
+      ) : null}
 
       {detailsOpen ? (
         <MovieDialog

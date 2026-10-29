@@ -123,6 +123,35 @@ describe("ComparePage", () => {
     expect(screen.getAllByRole("heading", { name: "Popularity baseline" })).toHaveLength(2);
   });
 
+  it("lets each side pick its own model and keeps them distinct", async () => {
+    const user = userEvent.setup();
+    api.compareAlgorithms.mockResolvedValue(response());
+    renderPage();
+
+    await screen.findByText("Alpha");
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Left algorithm" }),
+      "svd",
+    );
+    await waitFor(() =>
+      expect(api.compareAlgorithms).toHaveBeenLastCalledWith(
+        expect.objectContaining({ left: "svd", right: "user_cf" }),
+      ),
+    );
+
+    // Choosing the algorithm the other side already uses swaps them rather than sending a
+    // comparison the API would reject.
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Right algorithm" }),
+      "svd",
+    );
+    await waitFor(() =>
+      expect(api.compareAlgorithms).toHaveBeenLastCalledWith(
+        expect.objectContaining({ left: "user_cf", right: "svd" }),
+      ),
+    );
+  });
+
   it("refetches with the chosen list length", async () => {
     const user = userEvent.setup();
     api.compareAlgorithms.mockResolvedValue(response());
