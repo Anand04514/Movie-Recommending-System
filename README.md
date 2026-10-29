@@ -127,24 +127,29 @@ Useful flags: `--max-users 0 --max-ratings 0` (no sampling; needs more RAM),
 
 ### 2. `scripts/train_and_precompute.py` — every serving artifact
 
-One pass builds all four artifacts, each written next to a JSON sidecar recording its parameters,
-size and training time:
+One pass builds every artifact serving reads, each written next to a JSON sidecar recording its
+parameters, size and training time:
 
 | Artifact | What it is | Verified run |
 | --- | --- | --- |
 | `item_neighbors.npz` | Top-50 cosine neighbors on the mean-centered matrix, in bounded blocks (a dense item × item matrix is never materialized) | 22,013 of 22,973 items, 2.39M nnz, 5.5 MB, 14.7 s |
 | `svd_model.npz` | Biased SVD, rank 50, `svds` on the residual matrix, plus item factors for fold-in | train RMSE 0.8158, 7.8 MB, 1.3 s |
 | `content_features.npz` | Weighted, L2-normalised genre, decade and top-tag features over **all 87,585 catalogue films**, not just the model universe | 334 features (19 genres, 15 decades, 300 tags), 0.6 MB |
-| `user_neighbors.npz` | Top-50 similar viewers, rebuilt only when missing | k=50 |
+
+User-based CF needs no separate artifact: `UserCfService` folds the signed-in user into
+`train_matrix.npz` (from step 1) at request time, which is why it works for accounts that have no
+training row. `user_neighbors.npz` is an **evaluation** artifact, built by step 3 when missing, and
+is never read while serving.
 
 Useful flags: `--rank`, `--bias-regularisation`, `--factor-regularisation`, `--k`, `--block-size`,
-`--tag-top`, `--no-svd`.
+`--tag-top`, `--no-svd`, `--no-content`.
 
 ### 3. `scripts/evaluate_models.py` — the head-to-head numbers
 
 Scores eight methods on the same held-out pairs, tunes the hybrid weight on a validation slice of
 the *training* data (never the test slice), and writes `data/processed/evaluation.json` plus one
-row per method in the `model_runs` table. See [Results](#results).
+row per method in the `model_runs` table. It also builds and caches `user_neighbors.npz` (k=50) the
+first time, for the offline user-CF comparison. See [Results](#results).
 
 ### 4. `scripts/precompute_recs.py` — candidate cache
 
