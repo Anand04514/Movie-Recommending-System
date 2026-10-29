@@ -15,16 +15,55 @@ function SkeletonCard() {
   );
 }
 
+function ExternalCard({ hit, busy, disabled, onAdd }) {
+  return (
+    <article className="movie-card external-card" aria-busy={busy}>
+      <div className="movie-head">
+        <div className="movie-title">
+          <h3>{hit.title}</h3>
+          <p className="movie-meta">
+            {hit.release_year ?? "Year unknown"}
+            <span aria-hidden="true"> · </span>
+            {hit.vote_count.toLocaleString()} TMDB votes
+          </p>
+        </div>
+        <span className="badge">Not in catalog</span>
+      </div>
+
+      {hit.genres.length > 0 ? (
+        <ul className="genre-list" aria-label="Genres">
+          {hit.genres.slice(0, 3).map((genre) => (
+            <li key={genre}>{genre}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      {hit.overview ? <p className="external-overview">{hit.overview}</p> : null}
+
+      <div className="movie-foot">
+        <button type="button" className="button small" onClick={() => onAdd(hit)} disabled={busy || disabled}>
+          {busy ? "Adding…" : "Add & rate"}
+        </button>
+      </div>
+    </article>
+  );
+}
+
 export default function SearchPage({ user, ratingsByMovie, onRate, onRequireAuth }) {
   const [query, setQuery] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [state, setState] = useState({ status: "loading", data: null, error: null });
   const [savingId, setSavingId] = useState(null);
+  const [addingId, setAddingId] = useState(null);
+  // Films added from TMDB during this visit, so the new row is rateable straight away.
+  const [added, setAdded] = useState([]);
   const [actionError, setActionError] = useState(null);
 
   useEffect(() => {
     const controller = new AbortController();
     const delay = query.trim() ? 250 : 0;
+    // A new search starts a new list; films added for the previous one are still in the catalog.
+    setAdded([]);
     const timer = window.setTimeout(async () => {
       setState((previous) => ({
         status: previous.data ? "refreshing" : "loading",
@@ -62,8 +101,33 @@ export default function SearchPage({ user, ratingsByMovie, onRate, onRequireAuth
     }
   }
 
-  const movies = state.data?.results ?? [];
+  async function add(hit) {
+    if (!user) {
+      onRequireAuth("Sign in to add a film and rate it.");
+      return;
+    }
+    setAddingId(hit.tmdb_id);
+    setActionError(null);
+    try {
+      const movie = await api.addTmdbMovie(hit.tmdb_id);
+      setAdded((previous) => [
+        { movie, tmdbId: hit.tmdb_id },
+        ...previous.filter((entry) => entry.movie.id !== movie.id),
+      ]);
+    } catch (error) {
+      setActionError(error.message);
+    } finally {
+      setAddingId(null);
+    }
+  }
+
   const trimmed = query.trim();
+  const addedIds = new Set(added.map((entry) => entry.movie.id));
+  const addedHits = new Set(added.map((entry) => entry.tmdbId));
+  const catalog = (state.data?.results ?? []).filter((movie) => !addedIds.has(movie.id));
+  const movies = [...added.map((entry) => entry.movie), ...catalog];
+  // A hit added during this visit must not be offered a second time.
+  const external = (state.data?.external ?? []).filter((hit) => !addedHits.has(hit.tmdb_id));
 
   return (
     <>
@@ -155,7 +219,10 @@ export default function SearchPage({ user, ratingsByMovie, onRate, onRequireAuth
           </div>
         ) : null}
 
-        {state.status !== "loading" && state.status !== "error" && movies.length === 0 ? (
+        {state.status !== "loading" &&
+        state.status !== "error" &&
+        movies.length === 0 &&
+        external.length === 0 ? (
           <div className="panel empty">
             <h3>No films match “{trimmed}”.</h3>
             <p>Try a shorter title, or search by a distinctive word like “matrix” or “dune”.</p>
@@ -174,8 +241,34 @@ export default function SearchPage({ user, ratingsByMovie, onRate, onRequireAuth
                 rating={ratingsByMovie.get(movie.id) ?? 0}
                 onRate={rate}
                 busy={savingId === movie.id}
+                badge={movie.source === "tmdb" ? "Added" : undefined}
               />
             ))}
+          </div>
+        ) : null}
+
+        {external.length > 0 ? (
+          <div className="external-results">
+            <header className="section-head">
+              <h2>Newer than the dataset</h2>
+              <span className="muted">{external.length} from TMDB</span>
+            </header>
+            <p className="muted external-note">
+              These films were released after MovieLens ml-32m, so they are not in the catalog yet.
+              Add one to rate it and to see it in recommendations — it enters the collaborative
+              model at the next retrain.
+            </p>
+            <div className="movie-grid">
+              {external.map((hit) => (
+                <ExternalCard
+                  key={hit.tmdb_id}
+                  hit={hit}
+                  busy={addingId === hit.tmdb_id}
+                  disabled={addingId !== null && addingId !== hit.tmdb_id}
+                  onAdd={add}
+                />
+              ))}
+            </div>
           </div>
         ) : null}
       </section>

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 import statistics
-from datetime import timedelta
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -21,7 +21,9 @@ from backend.app.experiments import (
     get_experiment,
 )
 from backend.app.experiments import report as experiment_report
+from backend.app.freshness import boost_for, is_new_release
 from backend.app.models import Feedback, ModelRun, Movie, Rating, RecommendationLog, User
+from backend.app.new_releases import CANDIDATE_LIMIT, NewReleaseService
 from backend.app.precompute import load_batch, store_batch
 from backend.app.recommendations import (
     ArtifactsUnavailable,
@@ -144,9 +146,28 @@ def _build_items(
     titles = {movie_id: movie.title_display for movie_id, movie in movies.items()}
     user_mean = statistics.fmean(ratings_by_movie.values()) if ratings_by_movie else 0.0
 
+    settings = get_settings()
+    today = date.today()
+    boost_weight = settings.new_release_boost
+    window = settings.new_release_years
+
+    def rank_key(item) -> float:
+        """Model score plus a small, decaying freshness bonus for films inside the window."""
+        movie = movies.get(item.movie_id)
+        if movie is None or boost_weight <= 0:
+            return item.score
+        return item.score + boost_for(
+            movie.release_year, today=today, years=window, weight=boost_weight
+        )
+
+    # Re-rank before truncating, otherwise a fresh film outside the first page could never move in.
+    # A stable sort keeps the model's own order whenever the bonuses are equal (which is always the
+    # case when every candidate is older than the window).
+    ordered = sorted(batch.items, key=rank_key, reverse=True) if boost_weight > 0 else batch.items
+
     considered = 0
     results: list[RecommendationOut] = []
-    for item in batch.items:
+    for item in ordered:
         movie = movies.get(item.movie_id)
         if movie is None:
             # The catalog may be older or newer than the trained artifacts; skip rather than 500.
@@ -188,6 +209,7 @@ def _build_items(
                 reason=_reason(item, ratings_by_movie, titles, user_mean),
                 evidence=evidence[:MAX_EVIDENCE],
                 neighbors_rated=item.neighbors_rated,
+                new_release=is_new_release(movie.release_year, today=today, years=window),
             )
         )
         if len(results) >= limit:
@@ -459,6 +481,62 @@ def recommend(
         variant=assigned.variant if assigned else None,
         recommendations=items,
     )
+
+
+@router.get("/recommend/new-releases", response_model=list[RecommendationOut])
+def recommend_new_releases(
+    limit: int = Query(6, ge=1, le=20),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    content_service: ContentService = Depends(get_content_recommender),
+) -> list[RecommendationOut]:
+    """Recent films, scored by content only: the collaborative models have never seen them (5.11).
+
+    This is a content cold start, not a fake prediction: every pick is a catalogue row scored by
+    the feature vocabulary against the user's own taste profile, and a profile with no positive
+    signal gets an honest "new in the catalog" list instead.
+    """
+    settings = get_settings()
+    cutoff = date.today().year - max(settings.new_release_years, 1)
+    candidates = list(
+        db.scalars(
+            select(Movie)
+            .where(or_(Movie.release_year >= cutoff, Movie.source == "tmdb"))
+            .order_by(
+                Movie.release_year.is_(None), Movie.release_year.desc(), Movie.rating_count.desc()
+            )
+            .limit(CANDIDATE_LIMIT)
+        )
+    )
+    if not candidates:
+        return []
+
+    ratings_by_movie = _user_ratings(db, user)
+    excluded = _feedback_exclusions(db, user)
+    service = NewReleaseService(settings.processed_dir, content_service)
+    picks = service.picks(
+        ratings_by_movie,
+        candidates,
+        favourite_genres=_favourite_genres(db, ratings_by_movie),
+        limit=limit + len(excluded) + len(ratings_by_movie),
+    )
+
+    items: list[RecommendationOut] = []
+    for pick in picks:
+        if pick.movie.id in excluded or pick.movie.id in ratings_by_movie:
+            continue
+        items.append(
+            RecommendationOut(
+                movie=movie_to_out(pick.movie),
+                score=round(pick.similarity, 4),
+                predicted_rating=round(pick.predicted_rating, 2),
+                reason=pick.reason,
+                new_release=pick.is_new,
+            )
+        )
+        if len(items) >= limit:
+            break
+    return items
 
 
 @router.get("/compare", response_model=ComparisonResponse)

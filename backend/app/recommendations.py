@@ -357,6 +357,10 @@ class ContentService:
                     ) from exc
         return self._features
 
+    def features(self) -> ContentFeatures:
+        """The loaded feature artifact, so other content readers share one copy."""
+        return self._artifacts()
+
     def recommend(
         self,
         ratings: list[tuple[int, float]],

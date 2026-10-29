@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.app.models import ModelRun, Movie
-from backend.app.tmdb import poster_url
+from backend.app.tmdb import TmdbSearchResult, poster_url
 from recsys.titles import normalize_for_search, split_genres
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -74,6 +74,8 @@ class MovieOut(BaseModel):
     genres: list[str]
     rating_count: int
     in_model: bool
+    # "movielens" for the dataset, "tmdb" for a film ingested on demand (5.10).
+    source: str = "movielens"
     poster_path: str | None = None
     poster_url: str | None = None
     overview: str | None = None
@@ -87,9 +89,36 @@ def movie_to_out(movie: Movie) -> MovieOut:
         genres=split_genres(movie.genres),
         rating_count=movie.rating_count,
         in_model=movie.in_model,
+        source=movie.source or "movielens",
         poster_path=movie.poster_path,
         poster_url=poster_url(movie.poster_path),
         overview=movie.overview,
+    )
+
+
+class ExternalMovieOut(BaseModel):
+    """A TMDB search hit that is not in the catalog yet, so it has no catalog id."""
+
+    tmdb_id: int
+    title: str
+    release_year: int | None
+    genres: list[str]
+    overview: str | None = None
+    poster_path: str | None = None
+    poster_url: str | None = None
+    vote_count: int = 0
+
+
+def external_to_out(result: TmdbSearchResult) -> ExternalMovieOut:
+    return ExternalMovieOut(
+        tmdb_id=result.tmdb_id,
+        title=result.title,
+        release_year=result.release_year,
+        genres=list(result.genres),
+        overview=result.overview,
+        poster_path=result.poster_path,
+        poster_url=poster_url(result.poster_path),
+        vote_count=result.vote_count,
     )
 
 
@@ -131,6 +160,8 @@ class RecommendationOut(BaseModel):
     neighbors_rated: int | None = None
     # A lower-confidence, out-of-profile pick reserved at the back of a full list.
     discovery: bool = False
+    # Released inside the recency window, so it earned the re-ranking bonus (5.12).
+    new_release: bool = False
 
 
 class RecommendationFiltersApplied(BaseModel):
@@ -217,6 +248,9 @@ class SearchResponse(BaseModel):
     normalized_query: str
     count: int
     results: list[MovieOut]
+    # Films TMDB knows that the catalog does not, shown separately and never persisted (5.10).
+    external: list[ExternalMovieOut] = []
+    external_source: str | None = None
 
 
 class OnboardingResponse(BaseModel):

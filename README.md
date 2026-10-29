@@ -7,7 +7,7 @@ too obscure for the model.
 FastAPI + SQLAlchemy + Alembic backend, React + Vite frontend, and a pure-Python `recsys/` package
 that holds all the data and ML logic (no web or database imports, so it can be tested alone).
 
-**Current status:** Phases 0–5 are complete through 5.9 and tested. A new user can sign up, rate five
+**Current status:** Phases 0–5 are complete through 5.13 and tested. A new user can sign up, rate five
 varied films on an onboarding screen, search the real catalog, rate anything in half-star steps, and
 read personalized picks from five models — item-based CF, user-based CF, SVD with fold-in,
 content-based, and the validation-tuned hybrid — each with the ratings behind it. Which model a user
@@ -16,7 +16,8 @@ can be filtered by genre, year and predicted score, back-of-list discovery picks
 Like / Not for me feedback changes the next list immediately. Scored candidates are cached per user
 (measured 1.65× faster on repeat requests) and the accuracy dashboard charts eight methods plus live
 engagement per A/B arm. Posters and synopses appear automatically once a free TMDB key is configured.
-On-demand TMDB ingestion (5.10–5.13) is still open — see [Known gaps](#known-gaps).
+Films released after the dataset are searched on TMDB, added to the catalog on demand, rated like any
+other, and recommended by the content model in a “New releases for you” row.
 
 ## Quickstart
 
@@ -70,6 +71,8 @@ uv run python scripts/precompute_recs.py --users 200 --limit 50
 | A/B default model | Sticky per-user assignment between the hybrid and user-CF; the arm is shown on the page and its engagement is reported |
 | Cached candidates | `precomputed_recs` holds scored candidates per user and method; repeat page loads skip the model, and stale rows are never served |
 | Posters and details | Titles open a details dialog; posters and synopses load lazily from TMDB and cache locally |
+| Search beyond the dataset | When the catalog returns fewer than five matches, TMDB is asked too; hits are labelled “Not in catalog” and can be added in one click |
+| New releases | Films newer than MovieLens are scored by content (genres, keywords, decade), badged “New”, and shown in their own row; a small decaying freshness bonus re-ranks them |
 | Cold start | Users with no usable signal get the popularity baseline plus an onboarding prompt |
 
 The demo users (`password_hash="!"`, so they can never sign in) exist to give the catalog rating
@@ -302,6 +305,48 @@ recommendations. TMDB's terms require the attribution in the footer:
 A deployment should also show the TMDB logo per their brand guidelines; local development shows the
 text notice.
 
+## Films newer than the dataset (5.10–5.13)
+
+MovieLens ml-32m stops in 2023. Anything released after that can still be found, added, rated and
+recommended — without pretending the collaborative models have ever seen it.
+
+**Search finds them.** `GET /api/movies/search` ranks the catalog first. When the catalog returns
+fewer than five matches, the backend also asks TMDB's `/search/movie` and returns those hits in a
+separate `external` list with `external_source: "tmdb"`. A hit whose `tmdbId` is already in the
+catalog is suppressed, so the same film is never offered twice. With five or more local hits TMDB is
+not called at all, which keeps a plain “matrix” search at one round trip. External results are never
+written to the database: browsing cannot bloat the catalog.
+
+**Opening or rating one adds it.** `GET /api/movies/tmdb/{tmdbId}` is the only write path, and it is
+idempotent:
+
+- the row gets `id = 10,000,000 + tmdbId`, above every MovieLens id, so a new film can never collide
+  with an old one;
+- matching is on `tmdbId` first, then IMDb id — a MovieLens film that links to the same film is
+  reused (and its missing `tmdb_id` filled in) instead of being duplicated;
+- genres are mapped onto MovieLens labels (`Science Fiction` → `Sci-Fi`), keywords are stored
+  lower-cased, and the row records `source = "tmdb"`, `in_model = false`, `rating_count = 0` — TMDB
+  vote counts are not MovieLens ratings and are never mixed into popularity ordering;
+- a 404 from TMDB is cached (the id does not exist); a 500, a timeout or a rate limit is not, so a
+  blip is retried next time.
+
+**They are recommended by content.** A film with no ratings is invisible to item-CF, user-CF and SVD.
+`GET /api/recommend/new-releases` scores the TMDB-era catalog against the same taste profile the
+content model builds from a user's ratings, using the feature vocabulary frozen at training time — a
+new genre or keyword is ignored rather than shifting every other row. The row is honest about it: a
+user with no positive content signal sees “New in the catalog — no personal taste signal yet” rather
+than a fabricated match.
+
+**Freshness is a dial, not a secret.** Re-ranking adds `w · exp(−age_in_days / 365)` for films inside
+the window, with `NEW_RELEASE_YEARS` (default 2) and `NEW_RELEASE_BOOST` (default 0.15) in the
+environment. The bonus changes the order only; the reported score is still the model's own number.
+On this catalog its effect is close to zero by construction, because the dataset ends in 2023, and
+its real home is films ingested from TMDB afterwards. That is stated instead of being sold as a
+measured win.
+
+The whole path is tested against mocked TMDB transports: no test makes a live call, and a missing
+key, a 429, a 500 and a 404 are all ordinary cases.
+
 ## Results
 
 Protocol (`PLAN.md` §9): the **chronological per-user split**, most recent 20% held out; a sample of
@@ -379,13 +424,15 @@ What the numbers say:
 | `POST` | `/api/auth/signup` | – | Returns the user and an access token |
 | `POST` | `/api/auth/login` | – | Same shape as signup |
 | `GET` | `/api/auth/me` | ✔ | Current user profile |
-| `GET` | `/api/movies/search?q=&limit=` | – | Ranked by match tier, then rating count |
+| `GET` | `/api/movies/search?q=&limit=&include_external=` | – | Ranked by match tier, then rating count; `external` holds addable TMDB hits when the catalog has fewer than five matches |
 | `GET` | `/api/movies/genres` | – | Every genre label in the catalog, for the filter chips |
 | `GET` | `/api/movies/{id}` | – | Catalog detail, enriched from TMDB once when a key is set |
+| `GET` | `/api/movies/tmdb/{tmdb_id}` | – | Adds a film TMDB knows to the catalog once and returns it; 503 without a key, 404 when TMDB cannot supply it |
 | `GET` | `/api/ratings` | ✔ | The user's ratings with movie payloads |
 | `POST` | `/api/ratings` | ✔ | Upsert; rejects non-half-star values and out-of-range ratings |
 | `DELETE` | `/api/ratings/{movie_id}` | ✔ | 204 on success, 404 when unrated |
 | `GET` | `/api/recommend?limit=&algorithm=&experiment=&genres=&year_min=&year_max=&min_score=` | ✔ | Picks with score, predicted rating, reason, evidence, `discovery` and `cached` flags. Omit `algorithm` and the A/B experiment assigns `hybrid` or `user_cf` (reported as `experiment`/`variant`); pass it to choose `hybrid`, `svd`, `item_cf`, `user_cf` or `content` |
+| `GET` | `/api/recommend/new-releases?limit=` | ✔ | Films newer than the dataset, scored by content only, with a `new_release` badge; empty when nothing in the catalog is recent |
 | `GET` | `/api/compare?limit=&left=&right=` | ✔ | Any two of the five algorithms for one profile, with `overlap` ids and `overlap_count` |
 | `GET` | `/api/onboarding` | ✔ | Five diverse, well-known films plus the user's rated count |
 | `GET` | `/api/feedback` | ✔ | The user's liked / rejected / clicked history, newest first |
@@ -397,13 +444,15 @@ What the numbers say:
 ## Tests and lint
 
 ```bash
-uv run pytest        # 272 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 305 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
                      #            feedback, A/B assignment and attribution, cache validity, TMDB
+                     #            search/ingestion/cold start/recency
 uv run ruff check .  # clean
 cd frontend
-npm test             # 94 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
-                     #            model switch, compare, dashboard, engagement, session
+npm test             # 101 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
+                     #            model switch, compare, dashboard, engagement, session, addable
+                     #            TMDB results, the new-release row
 npm run build        # production build
 ```
 
@@ -478,7 +527,9 @@ recsys/          pure ML/data package: titles, chunked loading, filters, splits,
                  baselines, item-item CF, user CF, SVD + fold-in, content features, hybrid,
                  serendipity, metrics, evaluation harness
 backend/app/     FastAPI app: settings, database, models, schemas, security, routers, TMDB client,
-                 experiments (A/B assignment and reporting), precompute (candidate cache)
+                 ingest (on-demand TMDB films), new_releases (content cold start), freshness
+                 (recency window and boost), experiments (A/B assignment and reporting),
+                 precompute (candidate cache)
 backend/tests/   API tests (auth, search, ratings, recommendations, algorithms, feedback,
                  onboarding, TMDB, poster prefetch)
 migrations/      Alembic environment, initial schema, model_runs, feedback/impressions
@@ -502,7 +553,7 @@ tests/           tests for recsys/
 | 4 | Filters, "why this recommendation", algorithm comparison, accuracy dashboard, posters and details | Done |
 | 5 | SVD + fold-in, content-based, hybrid with validation tuning, onboarding, serendipity, feedback loop | Done (5.1–5.7) |
 | 5b | A/B default model with engagement report, precomputed candidate cache | Done (5.8–5.9) |
-| 5c | On-demand TMDB ingestion, content cold start for new films, new-release boost (5.10–5.13) | Next |
+| 5c | On-demand TMDB ingestion, content cold start for new films, new-release boost and row (5.10–5.13) | Done |
 | 6 | Deployment, demo recording, release tag | Planned |
 
 ## Known gaps
@@ -531,6 +582,18 @@ tests/           tests for recsys/
 - The cache covers **unfiltered page loads only**, because a filtered request needs a pool far wider
   than one warm-up, and it is not read for cold-start users. `precomputed_recs` also grows with users:
   there is a `--clear` flag but no retention job yet.
+- **An ingested film stays out of the collaborative model.** 5.11 asks the retrain job to merge app
+  users' ratings into the training data, so a film joins the model once it has 20 ratings. That merge
+  is not built: the pipeline still trains on MovieLens ratings only, so a TMDB film keeps
+  `in_model = false` and `rating_count = 0` however many app ratings it collects. Content-based
+  recommendation works today; joining CF is the next step.
+- **The freshness boost has no engagement evidence.** The plan's check — the share of new releases in
+  lists and their like and click rates from `recommendation_logs` — is not built, and on ml-32m the
+  bonus is structurally close to zero. It is tested for behaviour (order changes, score does not),
+  not for value.
+- Ingested films show “0 ratings” on their card, because TMDB vote counts are deliberately not
+  copied into `rating_count`; the card reads honestly but looks sparse next to MovieLens titles
+  until app ratings accumulate.
 - **TMDB ingestion of films newer than MovieLens is not built** (5.10–5.13): ml-32m ends in 2023, so a
   film like *Dune: Part Two* is genuinely missing from search. The TMDB client, cache and detail
   enrichment exist; on-demand catalog insertion, the new-release boost and the New releases row do

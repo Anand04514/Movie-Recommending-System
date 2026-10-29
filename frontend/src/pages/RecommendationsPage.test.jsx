@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api.js", () => ({
   getRecommendations: vi.fn(),
+  getNewReleases: vi.fn(),
   listGenres: vi.fn(),
   sendFeedback: vi.fn(),
 }));
@@ -107,6 +108,7 @@ describe("RecommendationsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.listGenres.mockResolvedValue(["Action", "Drama", "Sci-Fi"]);
+    api.getNewReleases.mockResolvedValue([]);
   });
 
   it("asks signed-out visitors to sign in instead of fetching picks", async () => {
@@ -384,5 +386,47 @@ describe("RecommendationsPage", () => {
         expect.objectContaining({ genres: [], yearMin: null, yearMax: null, minScore: null }),
       ),
     );
+  });
+
+  it("shows films newer than the dataset with a content-only explanation", async () => {
+    respond();
+    api.getNewReleases.mockResolvedValue([
+      {
+        movie: {
+          id: 10424242,
+          title: "Synthetic Future",
+          release_year: 2025,
+          rating_count: 0,
+          genres: ["Sci-Fi", "Action"],
+          source: "tmdb",
+        },
+        score: 0.42,
+        predicted_rating: 4.1,
+        reason: "New release matching your taste in Sci-Fi",
+        evidence: [],
+        new_release: true,
+      },
+    ]);
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "New releases for you" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Synthetic Future" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/New release matching your taste in Sci-Fi/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
+  });
+
+  it("keeps the main list when the new-release row cannot load", async () => {
+    respond();
+    api.getNewReleases.mockRejectedValue(new Error("TMDB is unreachable"));
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "The Matrix" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "New releases for you" }),
+    ).not.toBeInTheDocument();
   });
 });

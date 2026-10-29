@@ -285,6 +285,71 @@ def score_items(features: ContentFeatures, profile: ContentProfile) -> np.ndarra
     return np.asarray(features.matrix @ profile.vector, dtype="float64").ravel()
 
 
+def feature_row(
+    features: ContentFeatures,
+    *,
+    genres: list[str] | tuple[str, ...] = (),
+    release_year: int | None = None,
+    tags: list[str] | tuple[str, ...] = (),
+    genre_weight: float = DEFAULT_GENRE_WEIGHT,
+    decade_weight: float = DEFAULT_DECADE_WEIGHT,
+    tag_weight: float = DEFAULT_TAG_WEIGHT,
+) -> sparse.csr_matrix:
+    """Build one L2-normalised feature row in the **existing** vocabulary.
+
+    This is what makes a film TMDB supplied yesterday scorable tomorrow: the vocabulary was frozen
+    when the artifact was trained, so new genres, decades and keywords that nobody has seen yet are
+    ignored rather than shifting every other row. An empty row is returned as zeros, and the caller
+    is expected to treat a zero score as "no content signal" rather than as a match.
+    """
+    position = {name: index for index, name in enumerate(features.feature_names)}
+    columns: list[int] = []
+    values: list[float] = []
+
+    def add(name: str, weight: float) -> None:
+        column = position.get(name)
+        if column is not None and weight > 0:
+            columns.append(column)
+            values.append(float(weight))
+
+    for genre in genres:
+        if genre and genre != "(no genres listed)":
+            add(f"genre:{genre}", genre_weight)
+    decade = _decade_label(release_year)
+    if decade:
+        add(decade, decade_weight)
+    for tag in tags:
+        label = str(tag).strip().lower()
+        if label:
+            # A keyword is presence, not frequency, so it weighs what one tag occurrence weighs.
+            add(f"tag:{label}", tag_weight * float(np.log1p(1)))
+
+    if not columns:
+        return sparse.csr_matrix((1, features.n_features), dtype="float32")
+
+    row = sparse.csr_matrix(
+        (np.asarray(values, dtype="float32"), (np.zeros(len(columns)), np.asarray(columns))),
+        shape=(1, features.n_features),
+        dtype="float32",
+    )
+    row.sum_duplicates()
+    norm = float(np.sqrt(row.multiply(row).sum()))
+    if norm > 0:
+        row = (row / norm).tocsr()
+    return row
+
+
+def score_rows(profile: ContentProfile, matrix: sparse.csr_matrix) -> np.ndarray:
+    """Cosine similarity of each supplied row against the profile.
+
+    Rows must be unit length (``feature_row`` and the artifact both guarantee that), which is why
+    this is a plain product rather than a normalised one.
+    """
+    if not profile.has_signal or matrix.shape[1] != profile.vector.shape[0]:
+        return np.zeros(matrix.shape[0], dtype="float64")
+    return np.asarray(matrix @ profile.vector, dtype="float64").ravel()
+
+
 def recommend_content(
     features: ContentFeatures,
     rated_indices: np.ndarray,

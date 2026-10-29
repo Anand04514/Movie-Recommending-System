@@ -69,6 +69,7 @@ export default function RecommendationsPage({
   const [algorithm, setAlgorithm] = useState(null);
   const [filters, setFilters] = useState({ ...EMPTY_FILTERS, genres: [] });
   const [genreOptions, setGenreOptions] = useState([]);
+  const [fresh, setFresh] = useState([]);
 
   const request = useMemo(() => toRequestFilters(filters), [filters]);
   const filtered = isFiltered(filters);
@@ -85,6 +86,24 @@ export default function RecommendationsPage({
       });
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setFresh([]);
+      return undefined;
+    }
+    // Films newer than the dataset have no collaborative signal, so they get their own row built
+    // by the content model. A failure here must never take the main list down with it.
+    const controller = new AbortController();
+    api
+      .getNewReleases({ limit: 6, signal: controller.signal })
+      .then((rows) => setFresh(Array.isArray(rows) ? rows : []))
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setFresh([]);
+      });
+    return () => controller.abort();
+  }, [user, refreshKey]);
 
   useEffect(() => {
     if (!user) {
@@ -374,6 +393,34 @@ export default function RecommendationsPage({
             />
           ))}
         </div>
+      ) : null}
+
+      {!filtered && fresh.length > 0 ? (
+        <section className="new-releases" aria-labelledby="new-releases-heading">
+          <header className="section-head">
+            <h2 id="new-releases-heading">New releases for you</h2>
+            <span className="muted">Content model · via TMDB</span>
+          </header>
+          <p className="muted external-note">
+            Released after the dataset, so no collaborative model has seen them. These are scored
+            from genre, keywords and decade against your taste; rating one adds it to your history
+            and filters it out of this row.
+          </p>
+          <div className="movie-grid">
+            {fresh.map((recommendation) => (
+              <MovieCard
+                key={recommendation.movie.id}
+                movie={recommendation.movie}
+                rating={ratingsByMovie.get(recommendation.movie.id) ?? 0}
+                onRate={rate}
+                busy={savingId === recommendation.movie.id}
+                reason={recommendation.reason}
+                predictedRating={recommendation.predicted_rating}
+                badge={recommendation.new_release ? "New" : undefined}
+              />
+            ))}
+          </div>
+        </section>
       ) : null}
     </>
   );

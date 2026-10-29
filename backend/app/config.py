@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     processed_dir: str = "data/processed"
     # Precomputed candidates older than this are ignored in favour of a live computation.
     precompute_ttl_minutes: int = 360
+    # Recency (5.12): the window that earns the badge, and the size of the re-ranking bonus.
+    new_release_years: int = 2
+    new_release_boost: float = 0.15
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -36,6 +39,8 @@ class Settings(BaseSettings):
     tmdb_read_access_token: str = ""
     tmdb_poster_size: str = "w342"
     tmdb_cache_dir: str = "data/processed/tmdb_cache"
+    # Search results change slowly enough that a day of cache is free accuracy.
+    tmdb_search_cache_minutes: int = 1440
 
 
 @lru_cache

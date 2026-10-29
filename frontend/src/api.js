@@ -70,14 +70,24 @@ async function request(path, { method = "GET", body, auth = false, signal } = {}
   return payload;
 }
 
-export function searchMovies(query, { limit = 18, signal } = {}) {
+export function searchMovies(query, { limit = 18, includeExternal = true, signal } = {}) {
   const params = new URLSearchParams({ limit: String(limit) });
   if (query.trim()) params.set("q", query.trim());
+  if (!includeExternal) params.set("include_external", "false");
   return request(`/movies/search?${params.toString()}`, { signal });
 }
 
 export function getMovie(movieId, { signal } = {}) {
   return request(`/movies/${movieId}`, { signal });
+}
+
+// Adds a film TMDB knows to the catalog, once, and returns it as a normal movie.
+export function addTmdbMovie(tmdbId) {
+  return request(`/movies/tmdb/${tmdbId}`);
+}
+
+export function getNewReleases({ limit = 6, signal } = {}) {
+  return request(`/recommend/new-releases?limit=${limit}`, { auth: true, signal });
 }
 
 export function signup({ email, displayName, password }) {
