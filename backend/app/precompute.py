@@ -31,10 +31,10 @@ from backend.app.recommendations import RecommendationBatch, ScoredItem
 
 logger = logging.getLogger(__name__)
 
-# Artifacts whose retraining makes a cached candidate stale.
+# Serving artifacts whose retraining makes a cached candidate stale. user_neighbors.npz is left
+# out on purpose: it is built by the evaluation harness and never read while serving.
 ARTIFACT_FILES = (
     "item_neighbors.npz",
-    "user_neighbors.npz",
     "svd_model.npz",
     "content_features.npz",
     "hybrid_weights.json",
