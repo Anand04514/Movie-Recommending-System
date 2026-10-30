@@ -1,0 +1,28 @@
+.git
+.gitignore
+.gitattributes
+.venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+*.egg-info
+
+# Derived data never belongs in an image: it is published as a checksummed bundle instead.
+data
+dist
+*.db
+*.sqlite3
+
+# Rebuilt inside the frontend stage.
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+*.log
+.env
+.env.local
+docs
+README.md
+PLAN.md

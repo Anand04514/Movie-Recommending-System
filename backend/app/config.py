@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +34,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
 
+    # Serving (Phase 6). With the React build present, one container can serve the API and the app:
+    # same origin, no CORS, one deploy. Off by default so dev and tests keep an API-only surface.
+    serve_frontend: bool = False
+    frontend_dist: str = "frontend/dist"
+
     # TMDB (posters and overviews). Either credential enables it; with neither, the app simply
     # renders without posters. The v4 read access token is the preferred one.
     tmdb_api_key: str = ""
@@ -41,6 +47,21 @@ class Settings(BaseSettings):
     tmdb_cache_dir: str = "data/processed/tmdb_cache"
     # Search results change slowly enough that a day of cache is free accuracy.
     tmdb_search_cache_minutes: int = 1440
+
+    @field_validator("database_url")
+    @classmethod
+    def use_the_installed_driver(cls, value: str) -> str:
+        """Point a managed database URL at the driver this project actually installs.
+
+        Hosting providers hand out ``postgres://user:pass@host/db``, which SQLAlchemy maps to
+        psycopg2 by default — a package that is not in ``pyproject.toml``. Rewriting the scheme to
+        ``postgresql+psycopg`` makes Render, Railway and Heroku connection strings work as handed
+        over, with no manual edit and no extra dependency.
+        """
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return f"postgresql+psycopg://{value[len(prefix):]}"
+        return value
 
 
 @lru_cache

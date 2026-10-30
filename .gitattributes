@@ -1,0 +1,7 @@
+# Shell entrypoints run inside Linux containers; a CRLF checkout would fail with "$'\r': command
+# not found" and is a classic Windows-only production surprise.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.py text eol=lf

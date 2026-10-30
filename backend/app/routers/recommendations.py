@@ -285,11 +285,12 @@ def _apply_discovery(
     for item in items:
         if item.movie.id in chosen:
             genre = item.movie.genres[0] if item.movie.genres else "film"
+            article = "an" if genre[:1].lower() in "aeiou" else "a"
             item = item.model_copy(
                 update={
                     "discovery": True,
                     "reason": (
-                        f"Discovery — a {genre} pick outside your usual {label}"
+                        f"Discovery — {article} {genre} pick outside your usual {label}"
                     ),
                 }
             )

@@ -7,17 +7,41 @@ too obscure for the model.
 FastAPI + SQLAlchemy + Alembic backend, React + Vite frontend, and a pure-Python `recsys/` package
 that holds all the data and ML logic (no web or database imports, so it can be tested alone).
 
-**Current status:** Phases 0–5 are complete through 5.13 and tested. A new user can sign up, rate five
-varied films on an onboarding screen, search the real catalog, rate anything in half-star steps, and
-read personalized picks from five models — item-based CF, user-based CF, SVD with fold-in,
-content-based, and the validation-tuned hybrid — each with the ratings behind it. Which model a user
-gets **by default** is decided by a sticky A/B experiment; picking one by hand overrides it. Lists
-can be filtered by genre, year and predicted score, back-of-list discovery picks are labelled, and
-Like / Not for me feedback changes the next list immediately. Scored candidates are cached per user
-(measured 1.65× faster on repeat requests) and the accuracy dashboard charts eight methods plus live
-engagement per A/B arm. Posters and synopses appear automatically once a free TMDB key is configured.
-Films released after the dataset are searched on TMDB, added to the catalog on demand, rated like any
-other, and recommended by the content model in a “New releases for you” row.
+**Current status:** every phase in [PLAN.md](PLAN.md) is implemented and tested, apart from the demo
+recording (see [Known gaps](#known-gaps)). A
+new user can sign up, rate five varied films on an onboarding screen, search the real catalog, rate
+anything in half-star steps, and read personalized picks from five models — item-based CF, user-based
+CF, SVD with fold-in, content-based, and the validation-tuned hybrid — each with the ratings behind
+it. Which model a user gets **by default** is decided by a sticky A/B experiment; picking one by hand
+overrides it. Lists can be filtered by genre, year and predicted score, back-of-list discovery picks
+are labelled, and Like / Not for me feedback changes the next list immediately. Scored candidates are
+cached per user (measured 1.65× faster on repeat requests) and the accuracy dashboard charts eight
+methods plus live engagement per A/B arm. Posters and synopses appear automatically once a free TMDB
+key is configured. Films released after the dataset are searched on TMDB, added to the catalog on
+demand, rated like any other, and recommended by the content model in a “New releases for you” row.
+The app ships as **one container** that serves the API and the React build from the same origin, with
+the model artifacts fetched as a checksummed bundle at boot — see [Deploying it](#deploying-it).
+
+## Screenshots
+
+For you: the hybrid list, where every card names the rating that pushed it up and the runner-up
+ratings behind it.
+
+![For you — hybrid recommendations with reasons](docs/screenshots/for-you.png)
+
+| Discover — search over all 87,585 titles | Compare — two methods for the same profile |
+| --- | --- |
+| ![Discover](docs/screenshots/discover.png) | ![Compare](docs/screenshots/compare.png) |
+
+| Accuracy — the evaluated methods and costs | My ratings — the user's own library |
+| --- | --- |
+| ![Accuracy](docs/screenshots/accuracy.png) | ![My ratings](docs/screenshots/my-ratings.png) |
+
+Films newer than the dataset, scored by content and labelled “New”. This capture comes from a local
+run with three TMDB-era rows inserted by hand, because no live TMDB key is configured in this
+checkout; with a key the row follows whatever TMDB currently lists.
+
+![New releases for you](docs/screenshots/new-releases.png)
 
 ## Quickstart
 
@@ -40,6 +64,13 @@ uv run python scripts/seed_db.py
 # 4. Run both servers
 uv run uvicorn backend.app.main:app --reload --port 8000   # API + docs at /docs
 cd frontend && npm install && npm run dev                  # UI on http://127.0.0.1:5173
+```
+
+Or run it the way a deployment does — one process, one origin, no dev proxy:
+
+```bash
+cd frontend && npm run build && cd ..
+SERVE_FRONTEND=1 uv run uvicorn backend.app.main:app --port 8000   # UI and API on :8000
 ```
 
 Copy `.env.example` to `.env` to point `DATABASE_URL` at PostgreSQL; the backend enables `pg_trgm`
@@ -95,8 +126,10 @@ Verified on this checkout: 200,948 distinct users, 84,432 movies with at least o
 Once* 2022, *The Matrix Resurrections* 2021).
 
 `data/raw/` is **read-only**: nothing in the pipeline writes to it, and neither raw nor processed
-data is committed. The newest release in ml-32m is from 2023, so a film released after that can only
-appear through the on-demand TMDB ingestion, which is not built yet (5.10–5.13).
+data is committed. The newest release in ml-32m is from 2023, so a film released after that appears
+through the on-demand TMDB ingestion described in
+[Films newer than the dataset](#films-newer-than-the-dataset-510513) — and never through the
+collaborative models, which have no ratings to learn from for it.
 
 ## The pipeline
 
@@ -441,13 +474,142 @@ What the numbers say:
 | `GET` | `/api/model-runs?limit=` | – | Latest evaluation per method, newest first |
 | `GET` | `/api/experiments` | – | Every A/B experiment with per-arm users, impressions, likes, rejects, clicks and the rates derived from them |
 
+## Deploying it
+
+The repository holds code; it deliberately holds no data. A deployment is four pieces:
+
+| Piece | Source |
+| --- | --- |
+| API + React build | one Docker image, built by [`Dockerfile`](Dockerfile) |
+| Catalog and model artifacts | a checksummed `artifacts.tar.gz`, built by [`scripts/build_artifact_bundle.py`](scripts/build_artifact_bundle.py) and fetched at boot |
+| Users, ratings, feedback, impressions, `model_runs` | PostgreSQL |
+| The 32M training ratings | nowhere — they never leave the machine that trains |
+
+```
+                 ┌──────────────────────────── browser ─────────────────────────────┐
+                 │   React + Vite build, served by FastAPI itself (one origin)       │
+                 └───────────────┬──────────────────────────────────────────────────┘
+                                 │  /api/*
+                 ┌───────────────▼───────────────────────────────────────────────┐
+                 │  FastAPI: auth · search · ratings · recommend · compare       │
+                 │           feedback · experiments (A/B) · precompute cache    │
+                 └───────┬───────────────────────────────┬───────────────────────┘
+                         │                               │
+        ┌────────────────▼──────────┐      ┌─────────────▼──────────────────────┐
+        │ PostgreSQL (+ pg_trgm)    │      │ data/processed — read-only at serve│
+        │ users · ratings · movies  │      │ item_neighbors.npz · svd_model.npz │
+        │ feedback · logs           │      │ content_features.npz · train_matrix│
+        │ model_runs · assignments  │      │ catalog.parquet · hybrid_weights   │
+        └───────────────────────────┘      └─────────────▲──────────────────────┘
+                                                         │ publish, then fetch + verify
+   offline, on a laptop (16 GB)                          │
+   ml-32m ──► prepare_data ──► train_and_precompute ──────┘
+                    │                  └──► evaluate_models ──► model_runs, evaluation.json
+                    └──► seed_db (catalog + demo users)     precompute_recs (needs the live DB)
+```
+
+### One container, one origin
+
+With `SERVE_FRONTEND=1` the API serves `frontend/dist` at `/`: `/assets` is mounted as static files,
+`/` and any unknown page return `index.html` so a reload of a client-side view works, and a path under
+`/api/` still answers JSON — an unknown API route is a 404, never the SPA shell. The frontend calls
+`/api` relatively, exactly as it does behind the Vite dev proxy, so production needs no CORS rules and
+no second service. Without a build present the app logs a warning and serves the API alone, which is
+why the flag is off in development and in the test suite.
+
+The image is two stages: Node builds the SPA, then a slim Python image installs the locked
+dependencies with `uv sync --frozen`, copies the app, and runs as an unprivileged user. Its
+`HEALTHCHECK` polls `/api/health`, the same path the host is told to probe.
+
+### Artifacts, not a data bake
+
+Serving cannot work without `data/processed/`, but baking ~26 MB of Parquet and sparse matrices into
+every image would rebuild the image on every retrain. The bundle is therefore published once and
+downloaded at boot:
+
+```bash
+uv run python scripts/train_and_precompute.py     # the serving artifacts
+uv run python scripts/build_artifact_bundle.py    # -> dist/artifacts.tar.gz + .sha256
+
+# Wrote dist/artifacts.tar.gz (26.5 MB)
+#   8 artifacts, 62.4 MB before compression
+#   sha256 <digest>
+```
+
+Publish the archive anywhere public (a GitHub release asset, R2, S3) and set `ARTIFACTS_URL` and
+`ARTIFACTS_SHA256`. [`scripts/fetch_artifacts.py`](scripts/fetch_artifacts.py) downloads into a
+staging directory, checks the digest **before** unpacking, accepts only flat regular files that the
+archive's own manifest lists (so a tampered bundle cannot write outside `data/processed/`), and
+leaves nothing half-written on failure. When every required artifact is already on disk it exits
+immediately, which is what makes a restart cheap.
+
+### First boot, in order
+
+[`scripts/start.sh`](scripts/start.sh) is idempotent, because a hosted container restarts often:
+
+1. fetch the artifacts if they are missing (verifying them when it does);
+2. `alembic upgrade head`, so the schema is always the code's schema;
+3. seed the catalog once when `SEED_ON_START=1` — `--skip-if-seeded` means a long-lived database is
+   never rewritten on every boot — and mirror `DEMO_USERS` MovieLens profiles;
+4. start `uvicorn --proxy-headers` with one worker.
+
+### Environment
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | `sqlite:///./movie_recs.db` | PostgreSQL in production. A host-issued `postgres://…` URL is rewritten to the installed `psycopg` driver, so the connection string works as handed over |
+| `JWT_SECRET` | dev placeholder | Token signing key; must be replaced |
+| `SERVE_FRONTEND` | `0` | Serve the built SPA from the API origin |
+| `FRONTEND_DIST` | `frontend/dist` | Where that build lives |
+| `ARTIFACTS_URL`, `ARTIFACTS_SHA256` | unset | Bundle to fetch at boot |
+| `PROCESSED_DIR` | `data/processed` | Where artifacts are read from |
+| `SEED_ON_START`, `DEMO_USERS` | `0`, `500` | One-time catalog seeding at boot |
+| `TMDB_READ_ACCESS_TOKEN` / `TMDB_API_KEY` | unset | Posters, synopses, search beyond the dataset, on-demand ingestion |
+| `PRECOMPUTE_TTL_MINUTES` | `360` | Cached candidates older than this are ignored |
+| `NEW_RELEASE_YEARS`, `NEW_RELEASE_BOOST` | `2`, `0.15` | Recency window and re-ranking bonus |
+| `CORS_ORIGINS` | `localhost:5173` | Only needed when the UI is served separately |
+
+[`.env.example`](.env.example) lists them all with the local defaults.
+
+### Render
+
+[`render.yaml`](render.yaml) is a blueprint for a free web service plus a free PostgreSQL instance:
+
+1. Push the repository and choose **New → Blueprint** in Render, pointing at the repo.
+2. Build the bundle locally, publish it, and set `ARTIFACTS_URL` and `ARTIFACTS_SHA256` on the service
+   (both are `sync: false`, so they are entered once and never committed).
+3. Add `TMDB_READ_ACCESS_TOKEN` only if posters and on-demand films are wanted. The database URL, a
+   generated `JWT_SECRET`, `SERVE_FRONTEND` and `SEED_ON_START` all come from the blueprint.
+
+A free instance is a demo host, not a benchmark: it sleeps when idle (the first request afterwards
+pays the artifact load), its database is small and time-limited, and the blueprint pins **one worker**
+because the artifacts live in process memory. Training the full 32M-rating dataset is a laptop job
+(`PLAN.md` §3); a deployment only ever carries the processed subset and the artifacts above.
+
+### What was verified here, and what was not
+
+Verified on this checkout:
+
+- the production build served by FastAPI on a single port: `/` and `/recommendations` return the SPA,
+  `/assets/*` the bundles, `/api/health` JSON, `/api/does-not-exist` a JSON 404;
+- `scripts/start.sh` end to end against a database on disk: artifact check, migrations, one-time seed
+  that skips on the second boot, uvicorn, healthy `/api/health`;
+- the bundle built at 26.5 MB, served over HTTP, fetched with a matching checksum, and a corrupted
+  download rejected before extraction;
+- the exact commands the image runs, executed outside the image.
+
+Not verified, and stated as such: **no `docker build`** (Docker is not installed on this Windows
+machine), **no live Render deployment**, and **the PostgreSQL path still rests on SQLite-backed
+tests** — `pg_trgm`, a managed database URL and connection pooling have not run here.
+
 ## Tests and lint
 
 ```bash
-uv run pytest        # 305 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 333 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
                      #            feedback, A/B assignment and attribution, cache validity, TMDB
-                     #            search/ingestion/cold start/recency
+                     #            search/ingestion/cold start/recency, deployment artifact bundle,
+                     #            SPA serving and production settings
 uv run ruff check .  # clean
 cd frontend
 npm test             # 101 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
@@ -529,17 +691,21 @@ recsys/          pure ML/data package: titles, chunked loading, filters, splits,
 backend/app/     FastAPI app: settings, database, models, schemas, security, routers, TMDB client,
                  ingest (on-demand TMDB films), new_releases (content cold start), freshness
                  (recency window and boost), experiments (A/B assignment and reporting),
-                 precompute (candidate cache)
+                 precompute (candidate cache), SPA serving behind SERVE_FRONTEND
 backend/tests/   API tests (auth, search, ratings, recommendations, algorithms, feedback,
-                 onboarding, TMDB, poster prefetch)
+                 onboarding, TMDB, poster prefetch, SPA serving, production settings)
 migrations/      Alembic environment, initial schema, model_runs, feedback/impressions
 frontend/src/    React app: pages (discover, for you, onboarding, compare, ratings, accuracy),
                  components, api client, tests
 scripts/         prepare_data.py, train_and_precompute.py, evaluate_models.py, precompute_recs.py,
-                 seed_db.py, fetch_posters.py
+                 seed_db.py, fetch_posters.py, build_artifact_bundle.py, fetch_artifacts.py,
+                 start.sh (production entrypoint)
+Dockerfile       two-stage image: React build, then the API serving it from the same origin
+render.yaml      Render blueprint: free web service + PostgreSQL, health check on /api/health
+docs/screenshots README captures of the running app
+tests/           tests for recsys/ and for the deployment bundle
 data/raw/        downloaded MovieLens files — never modified or committed
 data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.json — never committed
-tests/           tests for recsys/
 ```
 
 ## Roadmap
@@ -554,7 +720,7 @@ tests/           tests for recsys/
 | 5 | SVD + fold-in, content-based, hybrid with validation tuning, onboarding, serendipity, feedback loop | Done (5.1–5.7) |
 | 5b | A/B default model with engagement report, precomputed candidate cache | Done (5.8–5.9) |
 | 5c | On-demand TMDB ingestion, content cold start for new films, new-release boost and row (5.10–5.13) | Done |
-| 6 | Deployment, demo recording, release tag | Planned |
+| 6 | One-container deploy, artifact bundle, Render blueprint, README, release tag | Done (6.1–6.3, 6.5) |
 
 ## Known gaps
 
@@ -594,15 +760,25 @@ tests/           tests for recsys/
 - Ingested films show “0 ratings” on their card, because TMDB vote counts are deliberately not
   copied into `rating_count`; the card reads honestly but looks sparse next to MovieLens titles
   until app ratings accumulate.
-- **TMDB ingestion of films newer than MovieLens is not built** (5.10–5.13): ml-32m ends in 2023, so a
-  film like *Dune: Part Two* is genuinely missing from search. The TMDB client, cache and detail
-  enrichment exist; on-demand catalog insertion, the new-release boost and the New releases row do
-  not.
 - Posters and synopses need a TMDB key; this checkout verified the client, cache and fallbacks with
   mocked responses, and no live TMDB call was made here.
 - The comparison view has the same evidence limit on both sides and no per-user caching; it runs two
   fold-ins per request and is comfortably fast at development scale, but would need caching before a
   large public deployment.
+- **Nothing is deployed yet.** The image defined by `Dockerfile` has not been built (no Docker on this
+  machine) and the Render blueprint has not been applied to a real account; what was verified is the
+  production server, the entrypoint and the artifact bundle, locally. [Deploying it](#deploying-it)
+  lists the split between the two.
+- **No demo recording is included.** The capture setup available during development recorded at
+  roughly 1 fps — enough to show states, not interaction — so shipping it as a demo would
+  misrepresent the app; the screenshots stand in until a normal-rate recording exists.
+- **Publishing artifacts is manual and there is no CI.** The bundle is built and uploaded by hand,
+  and retraining (`scripts/train_and_precompute.py`), cache warming (`scripts/precompute_recs.py`)
+  and re-evaluation are jobs a scheduler would own; nothing schedules them yet. A retrain reaches
+  production by rebuilding the image and republishing the bundle — the API loads artifacts at start,
+  never during a request.
+- One worker by design: the artifacts sit in process memory, so scaling out reloads the same matrices
+  in each process rather than sharing them.
 
 See [PLAN.md](PLAN.md) for the full development plan and [AGENTS.md](AGENTS.md) for the rules the
 build follows.

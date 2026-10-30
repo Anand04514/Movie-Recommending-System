@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: movie-recs
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    # One worker: the models and their artifacts live in process memory, so extra workers would
+    # each load ~25 MB of matrices and multiply the memory bill for no extra throughput here.
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: movie-recs-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SERVE_FRONTEND
+        value: "1"
+      - key: SEED_ON_START
+        value: "1"
+      - key: DEMO_USERS
+        value: "120"
+      - key: ARTIFACTS_URL
+        sync: false
+      - key: ARTIFACTS_SHA256
+        sync: false
+      - key: TMDB_READ_ACCESS_TOKEN
+        sync: false
+
+databases:
+  - name: movie-recs-db
+    plan: free
+    databaseName: movie_recs
+    user: movie_recs

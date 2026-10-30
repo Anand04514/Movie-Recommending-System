@@ -206,6 +206,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Delete existing seeded users and reseed them.",
     )
+    parser.add_argument(
+        "--skip-if-seeded",
+        action="store_true",
+        help=(
+            "Exit successfully when the catalog already has rows. Used on container start, where "
+            "the database outlives the container and re-seeding on every boot is wasted work."
+        ),
+    )
     return parser
 
 
@@ -233,6 +241,11 @@ def main(argv: list[str] | None = None) -> int:
 
     started = time.perf_counter()
     with get_session_factory()() as session:
+        if args.skip_if_seeded and not args.refresh_demo:
+            existing = session.scalar(select(func.count()).select_from(Movie)) or 0
+            if existing:
+                print(f"Catalog: {existing:,} movies already present; nothing seeded")
+                return 0
         movies = seed_catalog(session, args.processed_dir)
         print(f"Catalog: {movies:,} movies upserted")
         users, ratings = seed_demo_users(

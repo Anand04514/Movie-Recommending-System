@@ -1,6 +1,6 @@
 [project]
 name = "movie-recsys"
-version = "0.1.0"
+version = "0.2.0"
 description = "Movie recommendation system on MovieLens ml-32m"
 readme = "README.md"
 requires-python = ">=3.11"
