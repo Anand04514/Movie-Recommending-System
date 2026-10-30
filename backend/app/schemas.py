@@ -231,6 +231,22 @@ class ExperimentReportOut(BaseModel):
     variants: list[VariantReportOut]
 
 
+class ReleaseEngagementOut(BaseModel):
+    """Impressions from the recency row and what users did with them (PLAN 5.12)."""
+
+    impressions: int
+    total_impressions: int
+    share_of_impressions: float | None = None
+    users: int
+    films: int
+    likes: int
+    rejects: int
+    clicks: int
+    rated_after: int
+    like_rate: float | None = None
+    rated_rate: float | None = None
+
+
 class ModelRunOut(BaseModel):
     id: int
     algorithm: str

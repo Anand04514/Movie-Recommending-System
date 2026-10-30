@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../api.js", () => ({
   listModelRuns: vi.fn(),
   listExperiments: vi.fn(),
+  getNewReleaseReport: vi.fn(),
 }));
 
 import * as api from "../api.js";
@@ -97,6 +98,19 @@ describe("AccuracyPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.listExperiments.mockResolvedValue([]);
+    api.getNewReleaseReport.mockResolvedValue({
+      impressions: 0,
+      total_impressions: 0,
+      share_of_impressions: null,
+      users: 0,
+      films: 0,
+      likes: 0,
+      rejects: 0,
+      clicks: 0,
+      rated_after: 0,
+      like_rate: null,
+      rated_rate: null,
+    });
   });
 
   it("renders every method with readable metrics", async () => {
@@ -209,6 +223,40 @@ describe("AccuracyPage", () => {
     render(<AccuracyPage />);
 
     expect(await screen.findByText(/No experiment traffic yet/)).toBeInTheDocument();
+  });
+
+  it("reports how much of what users see comes from the new-release row", async () => {
+    api.listModelRuns.mockResolvedValue(RUNS);
+    api.getNewReleaseReport.mockResolvedValue({
+      impressions: 18,
+      total_impressions: 240,
+      share_of_impressions: 0.075,
+      users: 3,
+      films: 3,
+      likes: 6,
+      rejects: 2,
+      clicks: 0,
+      rated_after: 4,
+      like_rate: 0.75,
+      rated_rate: 0.2222,
+    });
+    render(<AccuracyPage />);
+
+    const panel = await screen.findByRole("region", { name: "New releases" });
+    expect(panel).toHaveTextContent("18 shown");
+    expect(panel).toHaveTextContent("7.5% of impressions");
+    expect(panel).toHaveTextContent("3 films");
+    expect(panel).toHaveTextContent("75% like rate");
+    expect(panel).toHaveTextContent("22.22% rated after");
+    // Too little traffic to read as a result, and the panel says so instead of implying one.
+    expect(within(panel).getByText(/this is a tally, not a result/)).toBeInTheDocument();
+  });
+
+  it("explains an empty new-release row rather than charting zeroes", async () => {
+    api.listModelRuns.mockResolvedValue(RUNS);
+    render(<AccuracyPage />);
+
+    expect(await screen.findByText(/No impressions yet\./)).toBeInTheDocument();
   });
 
   it("retries after a failed load", async () => {

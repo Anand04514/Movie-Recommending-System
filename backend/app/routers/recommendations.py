@@ -23,7 +23,8 @@ from backend.app.experiments import (
 from backend.app.experiments import report as experiment_report
 from backend.app.freshness import boost_for, is_new_release
 from backend.app.models import Feedback, ModelRun, Movie, Rating, RecommendationLog, User
-from backend.app.new_releases import CANDIDATE_LIMIT, NewReleaseService
+from backend.app.new_releases import CANDIDATE_LIMIT, NEW_RELEASE_ALGORITHM, NewReleaseService
+from backend.app.new_releases import engagement as release_engagement
 from backend.app.precompute import load_batch, store_batch
 from backend.app.recommendations import (
     ArtifactsUnavailable,
@@ -48,6 +49,7 @@ from backend.app.schemas import (
     RecommendationFiltersApplied,
     RecommendationOut,
     RecommendationResponse,
+    ReleaseEngagementOut,
     experiment_report_to_out,
     model_run_to_out,
     movie_to_out,
@@ -539,8 +541,30 @@ def recommend_new_releases(
             break
     # Logged like any other row: the freshness check in PLAN 5.12 is "what share of lists is new,
     # and do those films get liked?", and that question needs the impressions on record.
-    _log_impressions(db, user, items, algorithm="new_releases")
+    _log_impressions(db, user, items, algorithm=NEW_RELEASE_ALGORITHM)
     return items
+
+
+@router.get("/new-releases/report", response_model=ReleaseEngagementOut, tags=["meta"])
+def new_release_report(db: Session = Depends(get_db)) -> ReleaseEngagementOut:
+    """How much of what users see comes from the recency row, and how they respond to it (5.12).
+
+    Public like the other evaluation reports: it aggregates impressions, never per-user rows.
+    """
+    stats = release_engagement(db)
+    return ReleaseEngagementOut(
+        impressions=stats.impressions,
+        total_impressions=stats.total_impressions,
+        share_of_impressions=stats.share_of_impressions,
+        users=stats.users,
+        films=stats.films,
+        likes=stats.likes,
+        rejects=stats.rejects,
+        clicks=stats.clicks,
+        rated_after=stats.rated_after,
+        like_rate=stats.like_rate,
+        rated_rate=stats.rated_rate,
+    )
 
 
 @router.get("/compare", response_model=ComparisonResponse)

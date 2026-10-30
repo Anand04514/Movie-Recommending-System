@@ -59,11 +59,14 @@ describe("api client", () => {
     await api.compareAlgorithms({ limit: 15, left: "svd", right: "hybrid" });
     await api.compareAlgorithms({ limit: 5 });
     await api.listModelRuns();
+    await api.getNewReleaseReport();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/compare?limit=15&left=svd&right=hybrid");
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
     expect(fetchMock.mock.calls[1][0]).toBe("/api/compare?limit=5");
     expect(fetchMock.mock.calls[2][0]).toBe("/api/model-runs");
+    expect(fetchMock.mock.calls[3][0]).toBe("/api/new-releases/report");
+    expect(fetchMock.mock.calls[3][1].headers.Authorization).toBeUndefined();
   });
 
   it("sends feedback and fetches the onboarding shortlist", async () => {

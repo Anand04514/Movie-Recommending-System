@@ -174,6 +174,10 @@ export function listExperiments({ signal } = {}) {
   return request("/experiments", { signal });
 }
 
+export function getNewReleaseReport({ signal } = {}) {
+  return request("/new-releases/report", { signal });
+}
+
 export function getHealth() {
   return request("/health");
 }

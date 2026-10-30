@@ -139,6 +139,80 @@ function EngagementPanel() {
   );
 }
 
+// The row is a handful of cards per page, so a small impression count is normal early on; below
+// this the rates are a tally rather than a result, and the panel says so.
+const RELEASE_MIN_IMPRESSIONS = 50;
+
+function ReleasePanel() {
+  const [state, setState] = useState({ status: "loading", report: null, error: null });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api
+      .getNewReleaseReport({ signal: controller.signal })
+      .then((report) => setState({ status: "ready", report, error: null }))
+      .catch((error) => {
+        if (error.name === "AbortError") return;
+        setState({ status: "error", report: null, error: error.message });
+      });
+    return () => controller.abort();
+  }, []);
+
+  const report = state.report;
+
+  return (
+    <section className="engagement-card" aria-labelledby="release-title">
+      <h2 id="release-title">New releases</h2>
+      <p className="chart-note">
+        Films newer than the dataset are scored by content and shown in their own row. This is that
+        row&apos;s share of what users see, and how they respond to it.
+      </p>
+
+      {state.status === "error" ? (
+        <p className="table-note">
+          New-release engagement is unavailable right now ({state.error}).
+        </p>
+      ) : null}
+
+      {report && report.impressions === 0 ? (
+        <p className="table-note">
+          No impressions yet. The row logs one per card each time a signed-in user loads For you.
+        </p>
+      ) : null}
+
+      {report && report.impressions > 0 ? (
+        <>
+          <div className="stat-line">
+            <span>
+              <strong>{report.impressions.toLocaleString("en-US")}</strong> shown
+            </span>
+            <span>
+              <strong>{formatRate(report.share_of_impressions)}</strong> of impressions
+            </span>
+            <span>
+              <strong>{report.films.toLocaleString("en-US")}</strong> films
+            </span>
+            <span>
+              <strong>{formatRate(report.like_rate)}</strong> like rate
+            </span>
+            <span>
+              <strong>{formatRate(report.rated_rate)}</strong> rated after
+            </span>
+          </div>
+          <p className="table-note">
+            {report.likes} like{report.likes === 1 ? "" : "s"} and {report.rejects} reject
+            {report.rejects === 1 ? "" : "s"} on those impressions; a click counts as interest,
+            not as a verdict.
+            {report.impressions < RELEASE_MIN_IMPRESSIONS
+              ? ` With fewer than ${RELEASE_MIN_IMPRESSIONS} impressions this is a tally, not a result.`
+              : ""}
+          </p>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function buildMetrics(k) {
   return [
     { key: "rmse", label: "RMSE", better: "lower", kind: "score" },
@@ -356,6 +430,7 @@ export default function AccuracyPage() {
       ) : null}
 
       <EngagementPanel />
+      <ReleasePanel />
     </>
   );
 }

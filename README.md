@@ -98,7 +98,7 @@ uv run python scripts/precompute_recs.py --users 200 --limit 50
 | Feedback | Like / Not for me on every pick; the action is logged and the film leaves the next list immediately |
 | Discovery | A small tail slice is relabelled when it genuinely steps outside the profile, and badged “Discovery” |
 | Compare | Any two of five methods side by side for the same profile, with picks both lists agree on marked “Both” |
-| Accuracy | RMSE, MAE, precision/recall/NDCG@10 and coverage for eight methods, charted from `model_runs` |
+| Accuracy | RMSE, MAE, precision/recall/NDCG@10 and coverage for eight methods, charted from `model_runs`, plus A/B engagement and the new-release row's share and like rate |
 | A/B default model | Sticky per-user assignment between the hybrid and user-CF; the arm is shown on the page and its engagement is reported |
 | Cached candidates | `precomputed_recs` holds scored candidates per user and method; repeat page loads skip the model, and stale rows are never served |
 | Posters and details | Titles open a details dialog; posters and synopses load lazily from TMDB and cache locally |
@@ -412,6 +412,13 @@ measured win.
 The whole path is tested against mocked TMDB transports: no test makes a live call, and a missing
 key, a 429, a 500 and a 404 are all ordinary cases.
 
+**The row is measured, not assumed.** Showing it records one impression per card with
+`algorithm = "new_releases"`, and `GET /api/new-releases/report` folds those into the numbers PLAN
+5.12 asks for: the row's share of everything served, how many films and users it reaches, and the
+like and rated-after rates, counting only outcomes that happened at or after the impression. The
+accuracy page renders it under **New releases**, and refuses to read a rate as a result below 50
+impressions. On a fresh database it shows the honest empty state instead of zeroes.
+
 ## Results
 
 Protocol (`PLAN.md` §9): the **chronological per-user split**, most recent 20% held out; a sample of
@@ -505,6 +512,7 @@ What the numbers say:
 | `DELETE` | `/api/feedback/{movie_id}` | ✔ | Undo feedback for a film |
 | `GET` | `/api/model-runs?limit=` | – | Latest evaluation per method, newest first |
 | `GET` | `/api/experiments` | – | Every A/B experiment with per-arm users, impressions, likes, rejects, clicks and the rates derived from them |
+| `GET` | `/api/new-releases/report` | – | The recency row's impressions, share of all impressions, films, likes, rejects, clicks and the rates derived from them |
 
 ## Deploying it
 
@@ -637,14 +645,15 @@ tests** — `pg_trgm`, a managed database URL and connection pooling have not ru
 ## Tests and lint
 
 ```bash
-uv run pytest        # 360 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 364 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
                      #            feedback, A/B assignment and attribution, cache validity, TMDB
                      #            search/ingestion/cold start/recency, app-rating merge and retrain,
-                     #            deployment artifact bundle, SPA serving and production settings
+                     #            deployment artifact bundle, SPA serving, production settings and
+                     #            the new-release engagement report
 uv run ruff check .  # clean
 cd frontend
-npm test             # 101 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
+npm test             # 103 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
                      #            model switch, compare, dashboard, engagement, session, addable
                      #            TMDB results, the new-release row
 npm run build        # production build

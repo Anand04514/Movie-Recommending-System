@@ -16,14 +16,16 @@ Two consequences worth stating plainly:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
 from scipy import sparse
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from backend.app.freshness import is_new_release
-from backend.app.models import Movie
+from backend.app.models import Feedback, Movie, Rating, RecommendationLog
 from backend.app.recommendations import ArtifactsUnavailable, ContentService
 from recsys.content import (
     DEFAULT_PREDICTION_SLOPE,
@@ -36,6 +38,9 @@ from recsys.titles import split_genres
 
 # How many catalogue rows the row considers before ranking; a page is 6-8 films.
 CANDIDATE_LIMIT = 200
+
+# The algorithm label impressions from the "New releases for you" row are logged under.
+NEW_RELEASE_ALGORITHM = "new_releases"
 
 
 @dataclass(frozen=True)
@@ -158,3 +163,110 @@ class NewReleaseService:
                 )
             )
         return picks
+
+
+@dataclass(frozen=True)
+class ReleaseEngagement:
+    """What the new-release row has actually achieved, from impressions and their outcomes.
+
+    PLAN 5.12 asks for the share of new films in lists and their like rates; this is that check,
+    computed from ``recommendation_logs`` rather than read off the boost's formula.
+    """
+
+    impressions: int
+    total_impressions: int
+    users: int
+    films: int
+    likes: int
+    rejects: int
+    clicks: int
+    rated_after: int
+
+    @property
+    def share_of_impressions(self) -> float | None:
+        """How much of what the app shows comes from the recency row."""
+        return self.impressions / self.total_impressions if self.total_impressions else None
+
+    @property
+    def like_rate(self) -> float | None:
+        verdicts = self.likes + self.rejects
+        return self.likes / verdicts if verdicts else None
+
+    @property
+    def rated_rate(self) -> float | None:
+        return self.rated_after / self.impressions if self.impressions else None
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    """SQLite hands back naive datetimes; every timestamp in this app is UTC."""
+    if not isinstance(value, datetime):
+        return None
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def engagement(db: Session) -> ReleaseEngagement:
+    """Count the row's impressions and the signals that followed them.
+
+    An outcome counts only when it happened at or after the impression of that film, so a rating
+    the user already had cannot be read as a response to the recommendation.
+    """
+    rows = db.execute(
+        select(
+            RecommendationLog.user_id,
+            RecommendationLog.movie_id,
+            RecommendationLog.shown_at,
+        ).where(RecommendationLog.algorithm == NEW_RELEASE_ALGORITHM)
+    ).all()
+    total = db.scalar(select(func.count()).select_from(RecommendationLog)) or 0
+    if not rows:
+        return ReleaseEngagement(0, int(total), 0, 0, 0, 0, 0, 0)
+
+    user_ids = {int(row[0]) for row in rows}
+    verdicts: dict[tuple[int, int], list[tuple[datetime | None, str]]] = {}
+    for user_id, movie_id, action, created_at in db.execute(
+        select(Feedback.user_id, Feedback.movie_id, Feedback.action, Feedback.created_at).where(
+            Feedback.user_id.in_(user_ids)
+        )
+    ).all():
+        verdicts.setdefault((int(user_id), int(movie_id)), []).append((_utc(created_at), action))
+
+    rated_at: dict[tuple[int, int], datetime | None] = {
+        (int(user_id), int(movie_id)): _utc(updated_at)
+        for user_id, movie_id, updated_at in db.execute(
+            select(Rating.user_id, Rating.movie_id, Rating.updated_at).where(
+                Rating.user_id.in_(user_ids)
+            )
+        ).all()
+    }
+
+    likes = rejects = clicks = rated_after = 0
+    users: set[int] = set()
+    films: set[int] = set()
+    for user_id, movie_id, shown_at in rows:
+        user_id, movie_id = int(user_id), int(movie_id)
+        users.add(user_id)
+        films.add(movie_id)
+        shown = _utc(shown_at)
+        for when, action in verdicts.get((user_id, movie_id), ()):
+            if shown is not None and when is not None and when < shown:
+                continue
+            if action == "liked":
+                likes += 1
+            elif action == "rejected":
+                rejects += 1
+            elif action == "clicked":
+                clicks += 1
+        when = rated_at.get((user_id, movie_id))
+        if when is not None and shown is not None and when >= shown:
+            rated_after += 1
+
+    return ReleaseEngagement(
+        impressions=len(rows),
+        total_impressions=int(total),
+        users=len(users),
+        films=len(films),
+        likes=likes,
+        rejects=rejects,
+        clicks=clicks,
+        rated_after=rated_after,
+    )
