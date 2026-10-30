@@ -25,7 +25,7 @@ from backend.app.deps import get_tmdb_client
 from backend.app.freshness import age_in_days, boost_for, is_new_release, release_date_for
 from backend.app.ingest import TMDB_ID_BASE, ingest, movie_id_for
 from backend.app.main import app
-from backend.app.models import Movie, Rating
+from backend.app.models import Movie, Rating, RecommendationLog
 from backend.app.recommendations import (
     ContentService,
     HybridService,
@@ -572,6 +572,21 @@ def test_new_releases_are_empty_without_any_recent_film(
 
 def test_new_releases_require_auth(client: TestClient, services) -> None:
     assert client.get("/api/recommend/new-releases").status_code == 401
+
+
+def test_showing_the_row_records_impressions_for_the_freshness_check(
+    client: TestClient, customer, services, ingested
+) -> None:
+    """PLAN 5.12 checks the boost through `recommendation_logs`; that needs the row on record."""
+    headers, _ = customer
+    picks = client.get("/api/recommend/new-releases", headers=headers).json()
+
+    with get_session_factory()() as session:
+        logged = session.scalars(
+            select(RecommendationLog).where(RecommendationLog.algorithm == "new_releases")
+        ).all()
+    assert {row.movie_id for row in logged} == {pick["movie"]["id"] for pick in picks}
+    assert all(row.experiment is None for row in logged)
 
 
 def test_rating_a_new_film_does_not_enter_the_trained_model(

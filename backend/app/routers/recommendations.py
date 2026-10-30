@@ -537,6 +537,9 @@ def recommend_new_releases(
         )
         if len(items) >= limit:
             break
+    # Logged like any other row: the freshness check in PLAN 5.12 is "what share of lists is new,
+    # and do those films get liked?", and that question needs the impressions on record.
+    _log_impressions(db, user, items, algorithm="new_releases")
     return items
 
 

@@ -9,6 +9,10 @@ Usage:
     uv run python scripts/train_and_precompute.py --k 50 --rank 50
     uv run python scripts/train_and_precompute.py --no-svd --no-content
     uv run python scripts/train_and_precompute.py --no-tags
+
+    # Retrain with the app's own ratings folded in (PLAN 5.11): a film joins the collaborative
+    # model once its MovieLens count plus its app ratings reach --min-item-ratings.
+    uv run python scripts/train_and_precompute.py --include-app-ratings --sync-db
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from scipy import sparse
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from recsys.augment import merge_app_ratings  # noqa: E402
 from recsys.content import (  # noqa: E402
     build_content_features,
     extract_tag_features,
@@ -59,7 +64,140 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tag-top", type=int, default=300, help="Most frequent tags kept.")
     parser.add_argument("--tag-min-count", type=int, default=5)
+    parser.add_argument(
+        "--include-app-ratings",
+        action="store_true",
+        help=(
+            "Merge the ratings of real accounts into the training matrix before building "
+            "artifacts, so films the app has collected enough ratings for join the model."
+        ),
+    )
+    parser.add_argument(
+        "--min-item-ratings",
+        type=int,
+        default=20,
+        help="Ratings (MovieLens plus app) a film needs to join the collaborative model.",
+    )
+    parser.add_argument(
+        "--sync-db",
+        action="store_true",
+        help=(
+            "Mark films promoted by the merge as in_model in the database. Without it the "
+            "artifacts know about the film but the catalogue still labels it as out of model."
+        ),
+    )
     return parser
+
+
+def load_app_ratings() -> pd.DataFrame:
+    """Every rating written by a real account, not by a mirrored MovieLens demo profile.
+
+    The imports live here so the artifact builders stay importable without a database; this is
+    the one step of the retrain that needs the live application's data.
+    """
+    from sqlalchemy import select
+
+    from backend.app.db import get_session_factory
+    from backend.app.models import Rating, User
+
+    with get_session_factory()() as session:
+        rows = session.execute(
+            select(Rating.user_id, Rating.movie_id, Rating.rating)
+            .join(User, User.id == Rating.user_id)
+            .where(User.is_seeded.is_(False))
+        ).all()
+    return pd.DataFrame([tuple(row) for row in rows], columns=["user_id", "movie_id", "rating"])
+
+
+def load_prior_counts(processed: Path) -> dict[int, int]:
+    """MovieLens rating counts, so a rarely rated catalogue film can cross the threshold."""
+    catalog_path = processed / "catalog.parquet"
+    if not catalog_path.is_file():
+        return {}
+    catalog = pd.read_parquet(catalog_path, columns=["movie_id", "rating_count"])
+    return {
+        int(movie_id): int(count)
+        for movie_id, count in zip(catalog["movie_id"], catalog["rating_count"], strict=True)
+    }
+
+
+def sync_model_flags(promoted: tuple[int, ...]) -> int:
+    """Mark promoted films as part of the model universe in the catalogue table."""
+    if not promoted:
+        return 0
+    from sqlalchemy import update
+
+    from backend.app.db import get_session_factory
+    from backend.app.models import Movie
+
+    with get_session_factory()() as session:
+        result = session.execute(
+            update(Movie)
+            .where(Movie.id.in_(promoted), Movie.in_model.is_(False))
+            .values(in_model=True)
+        )
+        session.commit()
+    return int(result.rowcount or 0)
+
+
+def merge_into_artifacts(
+    args: argparse.Namespace,
+    processed: Path,
+    matrix: sparse.csr_matrix,
+    movie_map: pd.DataFrame,
+) -> tuple[sparse.csr_matrix, pd.DataFrame]:
+    """Fold the app's ratings in, rewrite the training artifacts, and report what changed."""
+    user_map_path = processed / "user_id_map.parquet"
+    if not user_map_path.is_file():
+        raise FileNotFoundError(
+            f"{user_map_path} is missing; run scripts/prepare_data.py before merging app ratings"
+        )
+    user_map = pd.read_parquet(user_map_path)
+    ratings = load_app_ratings()
+    print(f"App ratings: {len(ratings):,} from real accounts")
+
+    merged = merge_app_ratings(
+        matrix,
+        user_map,
+        movie_map,
+        ratings,
+        min_item_ratings=args.min_item_ratings,
+        prior_counts=load_prior_counts(processed),
+    )
+    stats = merged.stats
+
+    sparse.save_npz(processed / "train_matrix.npz", merged.matrix)
+    merged.user_map.to_parquet(user_map_path, index=False)
+    merged.movie_map.to_parquet(processed / "movie_id_map.parquet", index=False)
+    sidecar = {
+        "merged_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "min_item_ratings": args.min_item_ratings,
+        **stats.as_dict(),
+    }
+    (processed / "app_merge.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+
+    print(
+        f"  merged {stats.ratings_merged:,} ratings from {stats.users_added:,} accounts; "
+        f"{stats.duplicates:,} duplicate pairs dropped"
+    )
+    print(
+        f"  {stats.movies_added:,} films promoted to the model, "
+        f"{len(stats.below_threshold):,} still below {args.min_item_ratings} ratings"
+    )
+    if stats.previous_users_stripped or stats.previous_movies_stripped:
+        print(
+            f"  replaced a previous merge: {stats.previous_users_stripped:,} accounts, "
+            f"{stats.previous_movies_stripped:,} films"
+        )
+    if args.sync_db:
+        updated = sync_model_flags(stats.promoted)
+        print(f"  marked {updated:,} films in_model in the database")
+    elif stats.promoted:
+        print(
+            "  note: --sync-db was not passed; the catalogue still labels these films out of model"
+        )
+
+    return merged.matrix, merged.movie_map
 
 
 def reconstruction_rmse(model, matrix: sparse.csr_matrix, block_size: int = 2048) -> float:
@@ -187,6 +325,19 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     matrix = sparse.load_npz(matrix_path).tocsr()
     movie_map = pd.read_parquet(map_path)
+    if args.include_app_ratings:
+        try:
+            matrix, movie_map = merge_into_artifacts(args, processed, matrix, movie_map)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        except Exception as exc:  # noqa: BLE001 - a missing schema or database is an operator error
+            print(
+                f"error: could not read app ratings ({exc}); is the database migrated and "
+                "reachable? Without --include-app-ratings this step is skipped.",
+                file=sys.stderr,
+            )
+            return 1
     if len(movie_map) != matrix.shape[1]:
         print(
             f"error: movie map has {len(movie_map)} rows but the matrix has "

@@ -178,7 +178,39 @@ training row. `user_neighbors.npz` is an **evaluation** artifact, built by step 
 is never read while serving.
 
 Useful flags: `--rank`, `--bias-regularisation`, `--factor-regularisation`, `--k`, `--block-size`,
-`--tag-top`, `--no-svd`, `--no-content`.
+`--tag-top`, `--no-svd`, `--no-content`, `--include-app-ratings`, `--min-item-ratings`, `--sync-db`.
+
+#### Merging the app's own ratings (5.11)
+
+A film ingested from TMDB has no MovieLens ratings, so no collaborative model can see it however
+much the app's users rate it. `--include-app-ratings` folds the application's ratings into the
+training matrix before the artifacts are built, and a film joins the model once its catalogue rating
+count plus its app ratings reach `--min-item-ratings` (default 20):
+
+```bash
+uv run python scripts/train_and_precompute.py --include-app-ratings --sync-db
+
+# App ratings: 45 from real accounts
+#   merged 44 ratings from 10 accounts; 0 duplicate pairs dropped
+#   0 films promoted to the model, 1 still below 20 ratings
+#   marked 0 films in_model in the database
+```
+
+(`recsys/augment.py`; tests in `tests/test_augment.py` and `backend/tests/test_retrain_merge.py`.)
+
+Three details make it safe to run on a schedule:
+
+- **App users are new rows, never MovieLens ids.** A database user id means nothing to MovieLens, so
+  merging one as-is would attribute a stranger's ratings to a real profile; they are written as
+  `userId + 10,000,000` instead.
+- **A re-run replaces the previous merge**, because the id maps record which rows and columns the
+  merge added. Running it daily cannot double a rating or invent a duplicate account.
+- **Films below the threshold keep their ratings in the database**, stay recommendable through the
+  content model, and are listed in `app_merge.json` rather than silently dropped. `--sync-db` marks
+  promoted films as `in_model` in the catalogue; without it the artifacts and the badge disagree.
+
+Seeded MovieLens demo profiles are excluded: their ratings are already training data, and counting a
+mirrored profile twice would make it look like two people share its taste.
 
 ### 3. `scripts/evaluate_models.py` — the head-to-head numbers
 
@@ -465,7 +497,7 @@ What the numbers say:
 | `POST` | `/api/ratings` | ✔ | Upsert; rejects non-half-star values and out-of-range ratings |
 | `DELETE` | `/api/ratings/{movie_id}` | ✔ | 204 on success, 404 when unrated |
 | `GET` | `/api/recommend?limit=&algorithm=&experiment=&genres=&year_min=&year_max=&min_score=` | ✔ | Picks with score, predicted rating, reason, evidence, `discovery` and `cached` flags. Omit `algorithm` and the A/B experiment assigns `hybrid` or `user_cf` (reported as `experiment`/`variant`); pass it to choose `hybrid`, `svd`, `item_cf`, `user_cf` or `content` |
-| `GET` | `/api/recommend/new-releases?limit=` | ✔ | Films newer than the dataset, scored by content only, with a `new_release` badge; empty when nothing in the catalog is recent |
+| `GET` | `/api/recommend/new-releases?limit=` | ✔ | Films newer than the dataset, scored by content only, with a `new_release` badge; empty when nothing in the catalog is recent. Impressions are logged as `new_releases` |
 | `GET` | `/api/compare?limit=&left=&right=` | ✔ | Any two of the five algorithms for one profile, with `overlap` ids and `overlap_count` |
 | `GET` | `/api/onboarding` | ✔ | Five diverse, well-known films plus the user's rated count |
 | `GET` | `/api/feedback` | ✔ | The user's liked / rejected / clicked history, newest first |
@@ -605,11 +637,11 @@ tests** — `pg_trgm`, a managed database URL and connection pooling have not ru
 ## Tests and lint
 
 ```bash
-uv run pytest        # 333 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 360 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
                      #            feedback, A/B assignment and attribution, cache validity, TMDB
-                     #            search/ingestion/cold start/recency, deployment artifact bundle,
-                     #            SPA serving and production settings
+                     #            search/ingestion/cold start/recency, app-rating merge and retrain,
+                     #            deployment artifact bundle, SPA serving and production settings
 uv run ruff check .  # clean
 cd frontend
 npm test             # 101 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
@@ -681,13 +713,17 @@ and mock the API module.
   holds; the trade is that a hit saves the model maths, not the whole request.
 - Cache validity compares against the **newest artifact file**, not just a timer, so retraining the
   neighbours or factors cannot leave yesterday's scores in front of users.
+- App ratings enter the training data as **new rows under synthetic ids** (`userId + 10,000,000`),
+  never as MovieLens profiles, because a database id and a MovieLens id are unrelated numbers and a
+  collision would credit a stranger's ratings to a real person. The id maps record which rows and
+  columns a merge added, so re-running the retrain replaces its own output instead of compounding it.
 
 ## Layout
 
 ```
 recsys/          pure ML/data package: titles, chunked loading, filters, splits, id maps,
                  baselines, item-item CF, user CF, SVD + fold-in, content features, hybrid,
-                 serendipity, metrics, evaluation harness
+                 serendipity, app-rating merge (augment), metrics, evaluation harness
 backend/app/     FastAPI app: settings, database, models, schemas, security, routers, TMDB client,
                  ingest (on-demand TMDB films), new_releases (content cold start), freshness
                  (recency window and boost), experiments (A/B assignment and reporting),
@@ -719,7 +755,7 @@ data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.jso
 | 4 | Filters, "why this recommendation", algorithm comparison, accuracy dashboard, posters and details | Done |
 | 5 | SVD + fold-in, content-based, hybrid with validation tuning, onboarding, serendipity, feedback loop | Done (5.1–5.7) |
 | 5b | A/B default model with engagement report, precomputed candidate cache | Done (5.8–5.9) |
-| 5c | On-demand TMDB ingestion, content cold start for new films, new-release boost and row (5.10–5.13) | Done |
+| 5c | On-demand TMDB ingestion, content cold start, new-release boost and row, retrain merge (5.10–5.13) | Done |
 | 6 | One-container deploy, artifact bundle, Render blueprint, README, release tag | Done (6.1–6.3, 6.5) |
 
 ## Known gaps
@@ -748,13 +784,21 @@ data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.jso
 - The cache covers **unfiltered page loads only**, because a filtered request needs a pool far wider
   than one warm-up, and it is not read for cold-start users. `precomputed_recs` also grows with users:
   there is a `--clear` flag but no retention job yet.
-- **An ingested film stays out of the collaborative model.** 5.11 asks the retrain job to merge app
-  users' ratings into the training data, so a film joins the model once it has 20 ratings. That merge
-  is not built: the pipeline still trains on MovieLens ratings only, so a TMDB film keeps
-  `in_model = false` and `rating_count = 0` however many app ratings it collects. Content-based
-  recommendation works today; joining CF is the next step.
-- **The freshness boost has no engagement evidence.** The plan's check — the share of new releases in
-  lists and their like and click rates from `recommendation_logs` — is not built, and on ml-32m the
+- **The shipped artifacts are built from MovieLens only.** The retrain merge exists and is tested
+  (`--include-app-ratings`), but this checkout's artifacts were kept on the MovieLens baseline so the
+  published [Results](#results) stay reproducible from `prepare_data.py`. On this database the merge
+  would add 44 ratings from 10 accounts and promote nothing, which is why it is documented rather
+  than baked in. A deployment should run it on its own schedule.
+- **`in_model` is a display hint, and re-seeding resets it.** `--sync-db` marks promoted films, but
+  `scripts/seed_db.py` re-derives the flag from `catalog.parquet`, and `prepare_data.py` rebuilds that
+  file from MovieLens alone. Running the merge after a reseed restores the flags; the artifacts
+  themselves remain correct because serving reads the id map, not the column.
+- **A promoted film's rating count still reads MovieLens-only.** TMDB vote counts are deliberately not
+  copied into `rating_count` (they are not MovieLens ratings), so a film that joined the model on app
+  ratings can show a small count next to its now-real support.
+- **The freshness boost has no measured value yet.** Showing the row now records impressions with
+  `algorithm = "new_releases"` in `recommendation_logs`, so its share of what users see and the
+  like/reject rate of those films are answerable; no dashboard aggregates them, and on ml-32m the
   bonus is structurally close to zero. It is tested for behaviour (order changes, score does not),
   not for value.
 - Ingested films show “0 ratings” on their card, because TMDB vote counts are deliberately not
