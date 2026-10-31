@@ -43,6 +43,17 @@ if [ "${SEED_ON_START:-0}" = "1" ]; then
     --skip-if-seeded
 fi
 
+# The accuracy dashboard reads model_runs, which a fresh database has never filled. Importing the
+# shipped report makes those numbers appear without re-running a multi-minute evaluation. It is
+# idempotent and non-fatal: a missing report or table must not stop the container.
+if [ "${IMPORT_EVALUATION:-1}" = "1" ] && [ -f "$processed_dir/evaluation.json" ]; then
+  echo "Importing the evaluation report into model_runs"
+  "$PYTHON" scripts/evaluate_models.py \
+    --import-only \
+    --json "$processed_dir/evaluation.json" \
+    || echo "warning: could not import evaluation.json; the accuracy page will be empty" >&2
+fi
+
 echo "Starting the API"
 exec "$PYTHON" -m uvicorn backend.app.main:app \
   --host "${HOST:-0.0.0.0}" \

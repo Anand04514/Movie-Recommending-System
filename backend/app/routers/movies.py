@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, literal, select, text
 from sqlalchemy.orm import Session
 
-from backend.app.db import get_db
+from backend.app.db import get_db, trgm_available
 from backend.app.deps import get_tmdb_client
 from backend.app.ingest import ingest
 from backend.app.models import Movie
@@ -29,28 +29,85 @@ EXTERNAL_SEARCH_THRESHOLD = 5
 EXTERNAL_SEARCH_LIMIT = 6
 
 
-def _escape_like(text: str) -> str:
-    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+# Trigram fuzzing needs a query long enough to have a shape of its own; below this length it
+# matches nearly every title and stops being a ranking signal.
+FUZZY_MIN_LENGTH = 3
+# A word-similarity score at or above this counts as a typo-tolerant hit. The ``<%`` operator reads
+# a GUC, which the search sets with SET LOCAL so no other request inherits it.
+FUZZY_THRESHOLD = 0.5
 
 
-def _order_by_relevance(statement: Select, normalized: str, dialect: str) -> Select:
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def fuzzy_search_enabled(dialect: str, *, fuzzy: bool | None = None) -> bool:
+    """Whether this request may use pg_trgm's fuzzy operators.
+
+    ``fuzzy`` is an override so both branches can be tested without a live PostgreSQL server.
+    """
+    if fuzzy is not None:
+        return fuzzy
+    return dialect == "postgresql" and trgm_available()
+
+
+def _contains_filter(statement: Select, normalized: str) -> Select:
+    """The precise case: the title literally contains what was typed."""
+    if not normalized:
+        return statement
+    return statement.where(Movie.title_search.like(f"%{_escape_like(normalized)}%", escape="\\"))
+
+
+def _fuzzy_filter(statement: Select, normalized: str) -> Select:
+    """Typo tolerance: ``<%`` is pg_trgm's word-similarity operator, served by the GIN index.
+
+    This is a second query rather than an ``OR`` onto the precise one. On the live catalog the
+    combined condition could not use the trigram index and cost ~180 ms per search instead of
+    ~12 ms, and it also pulled loose matches into queries that already had exact answers.
+    """
+    if not normalized:
+        return statement
+    return statement.where(literal(normalized).op("<%")(Movie.title_search))
+
+
+def fuzzy_escalation_needed(*, fuzzy: bool, normalized: str, found: int) -> bool:
+    """Whether to fall back to approximate matching.
+
+    Only a query that matched *nothing* is treated as a possible misspelling. Padding out a real
+    answer with loosely similar titles is worse than a short list: on the live catalog
+    "inception" matched one film, and escalation then added "Deception" and "The Exception"
+    behind it. A short query has no trigram shape to match on, and a server without pg_trgm has no
+    operator to run.
+    """
+    return bool(fuzzy and normalized and len(normalized) >= FUZZY_MIN_LENGTH and found == 0)
+
+
+def _order_by_relevance(
+    statement: Select, normalized: str, dialect: str, *, fuzzy: bool | None = None
+) -> Select:
+    """Rank matches: word-start tier, then popularity, then fuzzy closeness.
+
+    Popularity outranks similarity inside a tier on purpose. Measured on the live catalog, plain
+    ``similarity`` put "GodFather (1991)" (9 ratings, an exact trigram match) ahead of "The
+    Godfather" (66,440 ratings) for the query "godfather", which is the wrong answer for anyone
+    typing that query. Closeness still decides between titles of comparable standing.
+    """
     if not normalized:
         return statement.order_by(Movie.rating_count.desc(), Movie.id)
     pattern = _escape_like(normalized)
     # A match at the start of a word beats one buried inside a longer word: searching "godfather"
-    # must rank "The Godfather" ("the godfather") by popularity rather than behind
-    # "GodFather (1991)" just because the normalized title starts with "the".
+    # must rank "The Godfather" ("the godfather") above "Tokyo Godfathers", not depend on length.
     word_start = Movie.title_search.like(f"{pattern}%", escape="\\") | Movie.title_search.like(
         f"% {pattern}%", escape="\\"
     )
-    if dialect == "postgresql":
-        # pg_trgm ranks close spellings inside a tier; popularity breaks ties.
+    if fuzzy_search_enabled(dialect, fuzzy=fuzzy):
         return statement.order_by(
             word_start.desc(),
-            func.similarity(Movie.title_search, normalized).desc(),
             Movie.rating_count.desc(),
+            func.similarity(Movie.title_search, normalized).desc(),
             Movie.id,
         )
+    # SQLite, and PostgreSQL without pg_trgm: no similarity(), so popularity decides.
     return statement.order_by(word_start.desc(), Movie.rating_count.desc(), Movie.id)
 
 
@@ -65,14 +122,27 @@ def search_movies(
     tmdb: TmdbClient = Depends(get_tmdb_client),
 ) -> SearchResponse:
     normalized = normalized_query_text(q)
-    statement = select(Movie)
-    if normalized:
-        pattern = f"%{_escape_like(normalized)}%"
-        statement = statement.where(Movie.title_search.like(pattern, escape="\\"))
-
     dialect = db.get_bind().dialect.name
-    statement = _order_by_relevance(statement, normalized, dialect)
+    fuzzy = fuzzy_search_enabled(dialect)
+
+    statement = _order_by_relevance(
+        _contains_filter(select(Movie), normalized), normalized, dialect, fuzzy=fuzzy
+    )
     movies = list(db.scalars(statement.limit(limit)))
+
+    # A misspelling gets exactly one second chance: when the precise query found nothing.
+    if fuzzy_escalation_needed(fuzzy=fuzzy, normalized=normalized, found=len(movies)):
+        # Both settings are transaction-scoped, so neither leaks to the next request that borrows
+        # this pooled connection. The planner otherwise estimates the trigram index at cost 1680
+        # against a 1457 sequential scan and takes the scan: measured on 87,585 rows, 153 ms
+        # against 6 ms through the index. This statement only runs when the precise query matched
+        # nothing, so the bitmap it selects is a small one.
+        db.execute(text(f"SET LOCAL pg_trgm.word_similarity_threshold = {FUZZY_THRESHOLD}"))
+        db.execute(text("SET LOCAL enable_seqscan = off"))
+        fuzzy_statement = _order_by_relevance(
+            _fuzzy_filter(select(Movie), normalized), normalized, dialect, fuzzy=True
+        )
+        movies = list(db.scalars(fuzzy_statement.limit(limit)))
 
     external: list[ExternalMovieOut] = []
     external_source: str | None = None

@@ -73,9 +73,11 @@ cd frontend && npm run build && cd ..
 SERVE_FRONTEND=1 uv run uvicorn backend.app.main:app --port 8000   # UI and API on :8000
 ```
 
-Copy `.env.example` to `.env` to point `DATABASE_URL` at PostgreSQL; the backend enables `pg_trgm`
-automatically at startup when the dialect is PostgreSQL. `JWT_SECRET` must be replaced in any
-deployment. `scripts/seed_db.py --demo-users 0` seeds the catalog only; `--refresh-demo` rebuilds
+Copy `.env.example` to `.env` to point `DATABASE_URL` at PostgreSQL; the backend creates `pg_trgm` at
+startup when it can and reports what it found. `pg_trgm` is an optimisation, not a requirement: on a
+server that does not offer it (some builds ship without contrib, some managed databases forbid
+`CREATE EXTENSION`) search still answers, ranked by word-start and popularity, and startup logs a
+warning instead of failing. `JWT_SECRET` must be replaced in any deployment. `scripts/seed_db.py --demo-users 0` seeds the catalog only; `--refresh-demo` rebuilds
 the demo users.
 
 Optional, and what a deployment should schedule after each retrain: warm the recommendation cache
@@ -90,7 +92,7 @@ uv run python scripts/precompute_recs.py --users 200 --limit 50
 | Feature | Notes |
 | --- | --- |
 | Sign up / sign in | JWT access tokens, bcrypt hashing, session restored from local storage |
-| Search any movie | Trigram (PostgreSQL) or word-boundary prefix ranking (SQLite); all 87,585 titles |
+| Search any movie | Word-start, then popularity, then trigram closeness; a misspelling is retried on PostgreSQL with word similarity ("matrx" finds *The Matrix*). All 87,585 titles |
 | Rate films | Half-star widget (0.5–5.0), upsert and delete, "My ratings" library with the average |
 | For you | Five models: hybrid, SVD with fold-in, item-based CF, user-based CF, content-based; the default is assigned by the A/B experiment and every pick carries a reason line, the runner-up ratings behind it and a damped predicted score |
 | Filters | Genre chips, a release-year range and a minimum predicted rating, applied to a wider scored pool |
@@ -218,6 +220,11 @@ Scores eight methods on the same held-out pairs, tunes the hybrid weight on a va
 the *training* data (never the test slice), and writes `data/processed/evaluation.json` plus one
 row per method in the `model_runs` table. It also builds and caches `user_neighbors.npz` (k=50) the
 first time, for the offline user-CF comparison. See [Results](#results).
+
+`--import-only` skips the evaluation entirely and refreshes `model_runs` from the saved report
+instead. A deploy ships that report as an artifact but starts on a database that has never run the
+evaluation, so without this step the accuracy dashboard would be empty; the import is what makes the
+shipped numbers appear, and it replaces rows per algorithm so a restart cannot duplicate them.
 
 ### 4. `scripts/precompute_recs.py` — candidate cache
 
@@ -591,7 +598,10 @@ immediately, which is what makes a restart cheap.
 2. `alembic upgrade head`, so the schema is always the code's schema;
 3. seed the catalog once when `SEED_ON_START=1` — `--skip-if-seeded` means a long-lived database is
    never rewritten on every boot — and mirror `DEMO_USERS` MovieLens profiles;
-4. start `uvicorn --proxy-headers` with one worker.
+4. import `evaluation.json` into `model_runs` when it is present (`IMPORT_EVALUATION=1`), so the
+   accuracy page shows the measured numbers on a database that never ran the evaluation. A missing
+   report is a warning, never a failed boot;
+5. start `uvicorn --proxy-headers` with one worker.
 
 ### Environment
 
@@ -604,6 +614,7 @@ immediately, which is what makes a restart cheap.
 | `ARTIFACTS_URL`, `ARTIFACTS_SHA256` | unset | Bundle to fetch at boot |
 | `PROCESSED_DIR` | `data/processed` | Where artifacts are read from |
 | `SEED_ON_START`, `DEMO_USERS` | `0`, `500` | One-time catalog seeding at boot |
+| `IMPORT_EVALUATION` | `1` | Fill `model_runs` from the shipped `evaluation.json` at boot |
 | `TMDB_READ_ACCESS_TOKEN` / `TMDB_API_KEY` | unset | Posters, synopses, search beyond the dataset, on-demand ingestion |
 | `PRECOMPUTE_TTL_MINUTES` | `360` | Cached candidates older than this are ignored |
 | `NEW_RELEASE_YEARS`, `NEW_RELEASE_BOOST` | `2`, `0.15` | Recency window and re-ranking bonus |
@@ -637,20 +648,37 @@ Verified on this checkout:
 - the bundle built at 26.5 MB, served over HTTP, fetched with a matching checksum, and a corrupted
   download rejected before extraction;
 - the exact commands the image runs, executed outside the image.
+- **the PostgreSQL path, end to end, on two real servers**, with a script in the repo:
+  [`scripts/verify_postgres.py`](scripts/verify_postgres.py) migrates up → down → up again, seeds
+  the 87,585-row catalog twice, imports the evaluation report, then drives signup, search, rating,
+  recommendations, filters, comparison, `model_runs`, the new-release report and the auth boundary
+  against the live server. Run on PostgreSQL 16.2 with `pg_trgm` (**28/28**) and on 16.2 without
+  contrib, the fallback path (**27/27**).
+
+  ```bash
+  uv run --with pgserver python scripts/verify_postgres.py --bundled   # no setup, no contrib
+  uv run python scripts/verify_postgres.py --database-url postgresql://…/scratch
+  ```
+
+  That run is what caught the three defects fixed here: search needed `pg_trgm` unconditionally,
+  a misspelling matched nothing, and an exact trigram match could outrank the film everyone means.
+  It also measured the search path: 8–14 ms on 87,585 titles, including the typo fallback.
 
 Not verified, and stated as such: **no `docker build`** (Docker is not installed on this Windows
-machine), **no live Render deployment**, and **the PostgreSQL path still rests on SQLite-backed
-tests** — `pg_trgm`, a managed database URL and connection pooling have not run here.
+machine), **no live Render deployment**, and **no managed database** — connection pooling, a
+host-issued SSL URL and a free tier's sleep/wake cycle have not run here. The extension probe is
+exactly what a managed database needs, because `CREATE EXTENSION` is not always permitted there.
 
 ## Tests and lint
 
 ```bash
-uv run pytest        # 364 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 380 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
                      #            feedback, A/B assignment and attribution, cache validity, TMDB
                      #            search/ingestion/cold start/recency, app-rating merge and retrain,
-                     #            deployment artifact bundle, SPA serving, production settings and
-                     #            the new-release engagement report
+                     #            deployment artifact bundle, SPA serving, production settings,
+                     #            the new-release engagement report, search ranking, the
+                     #            evaluation-report import and the PostgreSQL verifier's contract
 uv run ruff check .  # clean
 cd frontend
 npm test             # 103 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
@@ -679,8 +707,14 @@ and mock the API module.
 - Titles are normalized to `Matrix, The (1999)` → title / display `The Matrix` / search `the matrix`,
   so both "the matrix" and "matrix" match. The real catalog contains one year-only title,
   `" (2019)"`, which is preserved instead of crashing ingestion.
-- Search ranks a word-start match above a mid-word one, so `godfather` returns
-  *The Godfather (1972)* first instead of burying it behind `GodFather (1991)`.
+- Search ranks a word-start match above a mid-word one, then **popularity**, then trigram
+  closeness. Closeness-first measured badly on the real catalog: for `godfather`, `GodFather
+  (1991)` is an exact trigram match with 9 ratings and put itself ahead of *The Godfather (1972)*
+  and its 66,440 ratings.
+- **Typo tolerance is a second query, not an `OR`.** Approximate matching runs only when the
+  precise query found *nothing*, so a real answer is never padded with lookalikes (`inception`
+  returned `Deception`). `LIKE OR <%` also could not use the trigram index and cost ~180 ms per
+  search instead of ~10 ms on 87,585 rows.
 - Ratings are validated as half-star steps in 0.5–5.0; `4.2` and `6.0` are both rejected with a
   specific message.
 - Cold start is reported honestly: a popularity list is never described as personalized.
@@ -744,6 +778,7 @@ frontend/src/    React app: pages (discover, for you, onboarding, compare, ratin
                  components, api client, tests
 scripts/         prepare_data.py, train_and_precompute.py, evaluate_models.py, precompute_recs.py,
                  seed_db.py, fetch_posters.py, build_artifact_bundle.py, fetch_artifacts.py,
+                 verify_postgres.py (end-to-end check of the deploy path),
                  start.sh (production entrypoint)
 Dockerfile       two-stage image: React build, then the API serving it from the same origin
 render.yaml      Render blueprint: free web service + PostgreSQL, health check on /api/health
@@ -766,11 +801,12 @@ data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.jso
 | 5b | A/B default model with engagement report, precomputed candidate cache | Done (5.8–5.9) |
 | 5c | On-demand TMDB ingestion, content cold start, new-release boost and row, retrain merge (5.10–5.13) | Done |
 | 6 | One-container deploy, artifact bundle, Render blueprint, README, release tag | Done (6.1–6.3, 6.5) |
+| 6b | PostgreSQL verified on two real servers; `pg_trgm` treated as an optimisation; search scoring, typo fallback and the evaluation-report import fixed by what the run found | Done |
 
 ## Known gaps
 
-- Local development runs on SQLite; the PostgreSQL path (including `pg_trgm` similarity ranking) is
-  implemented and enabled at startup but has not been exercised on this machine.
+- Local development runs on SQLite. The PostgreSQL path is verified locally on a real server, but
+  not on a hosted one: pooling, TLS and provider-imposed extension limits are still untested.
 - One seed, one sample: no confidence intervals. The hybrid weight and base are tuned on a
   validation slice of the training data, but `damping`, neighbour `k` and the SVD rank are still
   fixed defaults, so the numbers are honest first-pass measurements rather than the best achievable.

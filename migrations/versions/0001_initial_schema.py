@@ -18,10 +18,32 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _trgm_available(connection) -> bool:
+    """Install ``pg_trgm`` when the server allows it, and report whether it worked.
+
+    The extension is an optimisation for search, not a dependency of the schema: a PostgreSQL
+    build without contrib, or a role without permission to install extensions, must still migrate
+    and serve. The attempt runs inside a SAVEPOINT because a failed statement aborts the whole
+    PostgreSQL transaction that Alembic is running in.
+    """
+    if connection.dialect.name != "postgresql":
+        return False
+    try:
+        with connection.begin_nested():
+            connection.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    except sa.exc.DBAPIError:
+        pass
+    return (
+        connection.exec_driver_sql(
+            "SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'"
+        ).first()
+        is not None
+    )
+
+
 def upgrade() -> None:
     is_postgres = op.get_bind().dialect.name == "postgresql"
-    if is_postgres:
-        op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    has_trgm = _trgm_available(op.get_bind()) if is_postgres else False
 
     op.create_table(
         "users",
@@ -55,7 +77,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_movies_title_search", "movies", ["title_search"])
     op.create_index("ix_movies_rating_count", "movies", ["rating_count"])
-    if is_postgres:
+    if has_trgm:
+        # gin_trgm_ops only exists when the extension does, so the index follows the extension.
         op.create_index(
             "ix_movies_title_search_trgm",
             "movies",
@@ -86,7 +109,8 @@ def downgrade() -> None:
     op.drop_index("ix_ratings_movie_id", table_name="ratings")
     op.drop_table("ratings")
     if op.get_bind().dialect.name == "postgresql":
-        op.drop_index("ix_movies_title_search_trgm", table_name="movies")
+        # The trigram index is skipped when the extension was unavailable, so drop tolerantly.
+        op.execute("DROP INDEX IF EXISTS ix_movies_title_search_trgm")
     op.drop_index("ix_movies_rating_count", table_name="movies")
     op.drop_index("ix_movies_title_search", table_name="movies")
     op.drop_table("movies")

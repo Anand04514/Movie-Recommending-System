@@ -13,6 +13,7 @@ Usage:
     uv run python scripts/evaluate_models.py --users 5000 --k 10 --chunk-size 256
     uv run python scripts/evaluate_models.py --no-tune --hybrid-weight 0.6
     uv run python scripts/evaluate_models.py --no-db --json /tmp/eval.json
+    uv run python scripts/evaluate_models.py --import-only   # refresh model_runs from the report
 """
 
 from __future__ import annotations
@@ -72,6 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", type=Path, default=Path("data/processed/evaluation.json"), help="Report path."
     )
     parser.add_argument("--no-db", action="store_true", help="Do not touch the model_runs table.")
+    parser.add_argument(
+        "--import-only",
+        action="store_true",
+        help=(
+            "Refresh model_runs from the saved --json report and exit; nothing is recomputed. "
+            "Used on container start, where the report ships as an artifact."
+        ),
+    )
     parser.add_argument(
         "--rebuild-user-neighbors",
         action="store_true",
@@ -254,47 +263,122 @@ def tune(
     return str(winner["base"]), float(winner["chosen_weight"]), payload
 
 
-def write_model_runs(
-    outcomes: list[MethodOutcome], *, trained_at: datetime, sample_users: int
-) -> int:
-    """Refresh the rows for these algorithms; returns how many were written."""
+def _store_model_runs(records: list[dict[str, object]], *, trained_at: datetime) -> int:
+    """Replace the rows for these algorithms; returns how many were written."""
     from sqlalchemy import delete
 
     from backend.app.db import get_session_factory
     from backend.app.models import ModelRun
 
-    algorithms = [outcome.method for outcome in outcomes]
+    algorithms = [str(record["algorithm"]) for record in records]
     with get_session_factory()() as session:
         session.execute(delete(ModelRun).where(ModelRun.algorithm.in_(algorithms)))
         session.add_all(
             ModelRun(
-                algorithm=outcome.method,
-                params=json.dumps(
-                    {
-                        **outcome.params,
-                        "k": outcome.k,
-                        "coverage": outcome.catalogue_coverage,
-                        "fallback_rate": outcome.fallback_rate,
-                        "evaluated_users": outcome.evaluated_users,
-                        "skipped_users": outcome.skipped_users,
-                        "rated_pairs": outcome.rated_pairs,
-                        "sample_users": sample_users,
-                        "runtime_seconds": round(outcome.runtime_seconds, 3),
-                        "peak_memory_mb": round(outcome.peak_memory_mb, 1),
-                    },
-                    sort_keys=True,
-                ),
-                rmse=outcome.rmse,
-                mae=outcome.mae,
-                precision_at_k=outcome.precision_at_k,
-                recall_at_k=outcome.recall_at_k,
-                ndcg_at_k=outcome.ndcg_at_k,
+                algorithm=str(record["algorithm"]),
+                params=json.dumps(record["params"], sort_keys=True),
+                rmse=record["rmse"],
+                mae=record["mae"],
+                precision_at_k=record["precision_at_k"],
+                recall_at_k=record["recall_at_k"],
+                ndcg_at_k=record["ndcg_at_k"],
                 trained_at=trained_at,
             )
-            for outcome in outcomes
+            for record in records
         )
         session.commit()
-    return len(outcomes)
+    return len(records)
+
+
+def write_model_runs(
+    outcomes: list[MethodOutcome], *, trained_at: datetime, sample_users: int
+) -> int:
+    """Refresh the rows for these algorithms; returns how many were written."""
+    return _store_model_runs(
+        [
+            {
+                "algorithm": outcome.method,
+                "params": {
+                    **outcome.params,
+                    "k": outcome.k,
+                    "coverage": outcome.catalogue_coverage,
+                    "fallback_rate": outcome.fallback_rate,
+                    "evaluated_users": outcome.evaluated_users,
+                    "skipped_users": outcome.skipped_users,
+                    "rated_pairs": outcome.rated_pairs,
+                    "sample_users": sample_users,
+                    "runtime_seconds": round(outcome.runtime_seconds, 3),
+                    "peak_memory_mb": round(outcome.peak_memory_mb, 1),
+                },
+                "rmse": outcome.rmse,
+                "mae": outcome.mae,
+                "precision_at_k": outcome.precision_at_k,
+                "recall_at_k": outcome.recall_at_k,
+                "ndcg_at_k": outcome.ndcg_at_k,
+            }
+            for outcome in outcomes
+        ],
+        trained_at=trained_at,
+    )
+
+
+def import_report(path: Path) -> int:
+    """Refresh ``model_runs`` from a saved report, recomputing nothing.
+
+    The report ships as an artifact, so a container can show the offline numbers on a database
+    that has never run the evaluation itself. Rows are replaced per algorithm, which keeps the
+    import idempotent across restarts.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        protocol = payload.get("protocol") or {}
+        trained_at = datetime.fromisoformat(payload["generated_at"])
+        if trained_at.tzinfo is None:
+            trained_at = trained_at.replace(tzinfo=UTC)
+        records = [
+            {
+                "algorithm": str(result["method"]),
+                "params": {
+                    **(result.get("params") or {}),
+                    "k": result.get("k"),
+                    "coverage": result.get("catalogue_coverage"),
+                    "fallback_rate": result.get("fallback_rate"),
+                    "evaluated_users": result.get("evaluated_users"),
+                    "skipped_users": result.get("skipped_users"),
+                    "rated_pairs": result.get("rated_pairs"),
+                    "sample_users": protocol.get("sample_users"),
+                    "runtime_seconds": round(float(result.get("runtime_seconds") or 0.0), 3),
+                    "peak_memory_mb": round(float(result.get("peak_memory_mb") or 0.0), 1),
+                    "imported_from": path.name,
+                },
+                "rmse": result.get("rmse"),
+                "mae": result.get("mae"),
+                "precision_at_k": result.get("precision_at_k"),
+                "recall_at_k": result.get("recall_at_k"),
+                "ndcg_at_k": result.get("ndcg_at_k"),
+            }
+            for result in payload["results"]
+        ]
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        print(f"error: cannot read {path} ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return 1
+    if not records:
+        print(f"error: {path} holds no results", file=sys.stderr)
+        return 1
+    try:
+        written = _store_model_runs(records, trained_at=trained_at)
+    except Exception as exc:  # noqa: BLE001 - a missing table must not stop the container
+        print(
+            f"error: could not write model_runs ({type(exc).__name__}: {exc}); "
+            "run `uv run alembic upgrade head` and retry",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"Imported {written} rows into model_runs from {path.name} "
+        f"(trained {trained_at.date().isoformat()})"
+    )
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -304,6 +388,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.hybrid_weight is not None and not 0.0 <= args.hybrid_weight <= 1.0:
         print("error: --hybrid-weight must be between 0 and 1", file=sys.stderr)
         return 1
+
+    if args.import_only:
+        return import_report(args.json)
 
     try:
         split = load_split(processed, users=args.users, seed=args.seed)
