@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../api.js", () => ({
   getRecommendations: vi.fn(),
   getNewReleases: vi.fn(),
+  getMovie: vi.fn(),
   listGenres: vi.fn(),
   sendFeedback: vi.fn(),
 }));
@@ -109,6 +110,7 @@ describe("RecommendationsPage", () => {
     vi.clearAllMocks();
     api.listGenres.mockResolvedValue(["Action", "Drama", "Sci-Fi"]);
     api.getNewReleases.mockResolvedValue([]);
+    api.getMovie.mockResolvedValue({ ...MOVIE, overview: "A hacker learns the truth." });
   });
 
   it("asks signed-out visitors to sign in instead of fetching picks", async () => {
@@ -213,6 +215,54 @@ describe("RecommendationsPage", () => {
 
     expect(api.sendFeedback).toHaveBeenCalledWith(PICK.movie.id, "liked", "item_cf");
     expect(await screen.findByText(/we will look for more like it/)).toBeInTheDocument();
+  });
+
+  it("logs a click against the model that served the pick", async () => {
+    const user = userEvent.setup();
+    api.sendFeedback.mockResolvedValue({ movie_id: PICK.movie.id, action: "clicked" });
+    respond({ algorithm: "svd" });
+    renderPage();
+
+    await screen.findByRole("heading", { name: "The Matrix" });
+    await user.click(screen.getByRole("button", { name: "The Matrix" }));
+
+    expect(api.sendFeedback).toHaveBeenCalledWith(PICK.movie.id, "clicked", "svd");
+    // The dialog still opens: the beacon is not on the critical path.
+    expect(await screen.findByLabelText("Close details")).toBeInTheDocument();
+  });
+
+  it("lets a failed click beacon pass silently", async () => {
+    const user = userEvent.setup();
+    api.sendFeedback.mockRejectedValue(new Error("Network down"));
+    respond();
+    renderPage();
+
+    await screen.findByRole("heading", { name: "The Matrix" });
+    await user.click(screen.getByRole("button", { name: "The Matrix" }));
+
+    expect(await screen.findByLabelText("Close details")).toBeInTheDocument();
+    await waitFor(() => expect(api.sendFeedback).toHaveBeenCalled());
+    expect(screen.queryByText(/Network down/)).not.toBeInTheDocument();
+  });
+
+  it("attributes a new-release click to that row's algorithm", async () => {
+    const user = userEvent.setup();
+    api.sendFeedback.mockResolvedValue({ movie_id: 603, action: "clicked" });
+    const fresh = {
+      ...PICK,
+      movie: { ...MOVIE, id: 603, title: "The Matrix Resurrections", release_year: 2021 },
+      reason: "New release matching your taste in Sci-Fi",
+      new_release: true,
+    };
+    api.getNewReleases.mockResolvedValue([fresh]);
+    respond();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("button", { name: "The Matrix Resurrections" }),
+    );
+
+    expect(api.sendFeedback).toHaveBeenCalledWith(603, "clicked", "new_releases");
   });
 
   it("points a new user at onboarding", async () => {

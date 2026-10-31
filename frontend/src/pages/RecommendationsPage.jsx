@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import * as api from "../api.js";
 import MovieCard from "../components/MovieCard.jsx";
@@ -10,6 +10,8 @@ import RecommendationFilters, {
 import SignInPrompt from "../components/SignInPrompt.jsx";
 
 const LIMIT = 12;
+// The server logs this row's impressions under this label, so clicks have to match it.
+const NEW_RELEASE_ALGORITHM = "new_releases";
 const FILTER_DEBOUNCE_MS = 200;
 const MODELS = [
   {
@@ -166,6 +168,12 @@ export default function RecommendationsPage({
       setSavingId(null);
     }
   }
+
+  // A click is what separates "shown" from "chosen" in the A/B report. It is fire-and-forget: a
+  // failed beacon must never delay the dialog or put an error in front of the reader.
+  const logClick = useCallback((movie, source) => {
+    api.sendFeedback(movie.id, "clicked", source).catch(() => {});
+  }, []);
 
   async function react(movie, action) {
     setFeedbackBusyId(movie.id);
@@ -384,6 +392,7 @@ export default function RecommendationsPage({
               rating={ratingsByMovie.get(recommendation.movie.id) ?? 0}
               onRate={rate}
               onFeedback={react}
+              onOpen={(movie) => logClick(movie, state.data?.algorithm ?? algorithm)}
               busy={savingId === recommendation.movie.id}
               feedbackBusy={feedbackBusyId === recommendation.movie.id}
               reason={recommendation.reason}
@@ -413,6 +422,7 @@ export default function RecommendationsPage({
                 movie={recommendation.movie}
                 rating={ratingsByMovie.get(recommendation.movie.id) ?? 0}
                 onRate={rate}
+                onOpen={(movie) => logClick(movie, NEW_RELEASE_ALGORITHM)}
                 busy={savingId === recommendation.movie.id}
                 reason={recommendation.reason}
                 predictedRating={recommendation.predicted_rating}

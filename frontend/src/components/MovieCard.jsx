@@ -50,6 +50,7 @@ export default function MovieCard({
   onRate,
   onRemove,
   onFeedback,
+  onOpen,
   busy = false,
   feedbackBusy = false,
   reason,
@@ -70,7 +71,11 @@ export default function MovieCard({
             <button
               type="button"
               className="title-button"
-              onClick={() => setDetailsOpen(true)}
+              onClick={() => {
+                setDetailsOpen(true);
+                // Telemetry, not navigation: the dialog opens whatever the caller does here.
+                onOpen?.(movie);
+              }}
               title={`Details for ${movie.title}`}
             >
               {movie.title}

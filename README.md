@@ -97,7 +97,7 @@ uv run python scripts/precompute_recs.py --users 200 --limit 50
 | For you | Five models: hybrid, SVD with fold-in, item-based CF, user-based CF, content-based; the default is assigned by the A/B experiment and every pick carries a reason line, the runner-up ratings behind it and a damped predicted score |
 | Filters | Genre chips, a release-year range and a minimum predicted rating, applied to a wider scored pool |
 | Onboarding | Five well-known films spanning genres and decades; progress unlocks the personalised models, with popularity + genre fallback before that |
-| Feedback | Like / Not for me on every pick; the action is logged and the film leaves the next list immediately |
+| Feedback | Like / Not for me on every pick; the action is logged and the film leaves the next list immediately. Opening a card logs a click against the model that served it |
 | Discovery | A small tail slice is relabelled when it genuinely steps outside the profile, and badged “Discovery” |
 | Compare | Any two of five methods side by side for the same profile, with picks both lists agree on marked “Both” |
 | Accuracy | RMSE, MAE, precision/recall/NDCG@10 and coverage for eight methods, charted from `model_runs`, plus A/B engagement and the new-release row's share and like rate |
@@ -672,7 +672,7 @@ exactly what a managed database needs, because `CREATE EXTENSION` is not always 
 ## Tests and lint
 
 ```bash
-uv run pytest        # 380 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 381 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
                      #            feedback, A/B assignment and attribution, cache validity, TMDB
                      #            search/ingestion/cold start/recency, app-rating merge and retrain,
@@ -681,9 +681,9 @@ uv run pytest        # 380 tests: titles, pipeline, metrics, baselines, item/use
                      #            evaluation-report import and the PostgreSQL verifier's contract
 uv run ruff check .  # clean
 cd frontend
-npm test             # 103 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
-                     #            model switch, compare, dashboard, engagement, session, addable
-                     #            TMDB results, the new-release row
+npm test             # 108 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
+                     #            the click beacon, model switch, compare, dashboard, engagement,
+                     #            session, addable TMDB results, the new-release row
 npm run build        # production build
 ```
 
@@ -733,7 +733,10 @@ and mock the API module.
   and the validation slice behind it, so re-tuning is a file change and every pick can be traced to
   a measured decision.
 - Each pick carries the algorithm that produced it into `feedback` and `recommendation_logs`, so a
-  like or a reject is attributable to a method rather than an anonymous row.
+  like, a reject or a click is attributable to a method rather than an anonymous row. Opening a
+  card beacons one `clicked` row (upserted, so reopening cannot multiply it) and never removes the
+  film from the list — only a like or a reject does that; the beacon is fire-and-forget, so a
+  failed one cannot delay the dialog or show an error.
 - **Rejected films leave the next list.** Feedback is read on the next request and folded into the
   exclusion set alongside already-rated films; models are retrained on a schedule
   (`scripts/train_and_precompute.py`), never inside a click, which is why the response stays fast.
@@ -823,9 +826,6 @@ data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.jso
   next step before trusting a small gap.
 - **Only one experiment is defined** (`default_model_v1`). The registry supports more, but assignment
   and the report are per-experiment and there is no scheduling or auto-stop logic.
-- A **click** can only be recorded through the API: cards log impressions and rate/like/reject, but
-  there is no click beacon on the details dialog yet, so the `clicks` column stays at zero in normal
-  use.
 - The cache covers **unfiltered page loads only**, because a filtered request needs a pool far wider
   than one warm-up, and it is not read for cold-start users. `precomputed_recs` also grows with users:
   there is a `--clear` flag but no retention job yet.

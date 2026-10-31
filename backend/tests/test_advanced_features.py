@@ -14,7 +14,7 @@ from scipy import sparse
 
 from backend.app.db import get_session_factory
 from backend.app.main import app
-from backend.app.models import RecommendationLog
+from backend.app.models import Feedback, RecommendationLog
 from backend.app.recommendations import (
     ContentService,
     HybridService,
@@ -233,6 +233,42 @@ def test_feedback_requires_auth_and_a_real_movie(client: TestClient, customer, s
         == 422
     )
     assert client.delete("/api/feedback/14", headers=headers).status_code == 404
+
+
+def test_a_click_is_stored_once_and_keeps_the_film_in_the_list(
+    client: TestClient, customer, services
+) -> None:
+    """The card beacons a click when its details open; that must not act like a rejection."""
+    headers, _ = customer
+    target = client.get(
+        "/api/recommend", params={"algorithm": "item_cf", "limit": 5}, headers=headers
+    ).json()["recommendations"][0]["movie"]["id"]
+
+    first = client.post(
+        "/api/feedback",
+        json={"movie_id": target, "action": "clicked", "source_algorithm": "item_cf"},
+        headers=headers,
+    )
+    assert first.status_code == 200
+    assert first.json()["action"] == "clicked"
+
+    # Opening the same card again re-attributes the click instead of adding a second row.
+    again = client.post(
+        "/api/feedback",
+        json={"movie_id": target, "action": "clicked", "source_algorithm": "hybrid"},
+        headers=headers,
+    )
+    assert again.status_code == 200
+
+    with get_session_factory()() as session:
+        clicked = session.query(Feedback).filter(Feedback.action == "clicked").all()
+    assert len(clicked) == 1
+    assert clicked[0].source_algorithm == "hybrid"
+
+    after = client.get(
+        "/api/recommend", params={"algorithm": "item_cf", "limit": 5}, headers=headers
+    ).json()["recommendations"]
+    assert target in {item["movie"]["id"] for item in after}
 
 
 def test_every_shown_pick_is_logged(client: TestClient, customer, services) -> None:

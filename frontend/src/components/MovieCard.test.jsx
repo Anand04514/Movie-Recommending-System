@@ -129,6 +129,28 @@ describe("MovieCard", () => {
     expect(api.getMovie).toHaveBeenCalledWith(MOVIE.id, expect.anything());
   });
 
+  it("reports an opened card without waiting on the dialog", async () => {
+    const user = userEvent.setup();
+    // The dialog's own request is left pending: opening must not depend on it.
+    api.getMovie.mockReturnValue(new Promise(() => {}));
+    const onOpen = vi.fn();
+    render(<MovieCard movie={MOVIE} onOpen={onOpen} />);
+
+    await user.click(screen.getByRole("button", { name: "The Matrix" }));
+
+    expect(onOpen).toHaveBeenCalledWith(MOVIE);
+  });
+
+  it("opens silently when no caller wants the click", async () => {
+    const user = userEvent.setup();
+    api.getMovie.mockResolvedValue({ ...MOVIE, poster_url: null });
+    render(<MovieCard movie={MOVIE} />);
+
+    await user.click(screen.getByRole("button", { name: "The Matrix" }));
+
+    expect(api.getMovie).toHaveBeenCalled();
+  });
+
   it("shows the TMDB poster when the catalog has one", () => {
     const poster = "https://image.tmdb.org/t/p/w342/matrix.jpg";
     const { container } = render(<MovieCard movie={{ ...MOVIE, poster_url: poster }} />);
