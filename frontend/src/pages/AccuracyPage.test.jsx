@@ -59,9 +59,21 @@ const RUNS = [
   },
 ];
 
+const COMPARISON = {
+  metric: "engagement_rate",
+  a_variant: "hybrid",
+  b_variant: "user_cf",
+  difference: -0.11,
+  low: -0.223,
+  high: -0.005,
+  confidence: 0.95,
+  significant: true,
+};
+
 const EXPERIMENT = {
   name: "default_model_v1",
   description: "Which model a signed-in user gets when they have not chosen one.",
+  comparison: COMPARISON,
   variants: [
     {
       variant: "hybrid",
@@ -199,6 +211,35 @@ describe("AccuracyPage", () => {
     expect(userCf).toHaveTextContent("37.5%");
     expect(userCf.querySelector("td.is-best")).toBeNull();
     expect(screen.getByRole("heading", { name: "Live engagement" })).toBeInTheDocument();
+  });
+
+  it("shows the engagement gap with its interval", async () => {
+    api.listModelRuns.mockResolvedValue(RUNS);
+    api.listExperiments.mockResolvedValue([EXPERIMENT]);
+    render(<AccuracyPage />);
+
+    const panel = await screen.findByRole("region", { name: "Live engagement" });
+
+    expect(within(panel).getByText(/−11\.0 pts/)).toBeInTheDocument();
+    expect(within(panel).getByText(/95% CI −22\.3 pts to −0\.5 pts/)).toBeInTheDocument();
+    expect(within(panel).getByText(/interval excludes zero/)).toBeInTheDocument();
+  });
+
+  it("refuses a leader when the interval crosses zero", async () => {
+    api.listModelRuns.mockResolvedValue(RUNS);
+    api.listExperiments.mockResolvedValue([
+      {
+        ...EXPERIMENT,
+        comparison: { ...COMPARISON, low: -0.24, high: 0.02, significant: false },
+      },
+    ]);
+    render(<AccuracyPage />);
+
+    const panel = await screen.findByRole("region", { name: "Live engagement" });
+    const hybrid = within(panel).getByRole("row", { name: /^Hybrid/ });
+
+    expect(hybrid.querySelector("td.is-best")).toBeNull();
+    expect(within(panel).getByText(/no clear leader yet/)).toBeInTheDocument();
   });
 
   it("refuses to crown an arm on too little traffic", async () => {

@@ -225,10 +225,28 @@ class VariantReportOut(BaseModel):
     engagement_rate: float | None = None
 
 
+class ArmComparisonOut(BaseModel):
+    """The measured gap between two arms, with its interval.
+
+    ``significant`` is false whenever the interval crosses zero, so a reader never has to do the
+    arithmetic that turns a small sample into a confident-sounding sentence.
+    """
+
+    metric: str
+    a_variant: str
+    b_variant: str
+    difference: float
+    low: float
+    high: float
+    confidence: float
+    significant: bool
+
+
 class ExperimentReportOut(BaseModel):
     name: str
     description: str
     variants: list[VariantReportOut]
+    comparison: ArmComparisonOut | None = None
 
 
 class ReleaseEngagementOut(BaseModel):
@@ -296,9 +314,24 @@ def normalized_query_text(query: str) -> str:
 
 def experiment_report_to_out(report: Any) -> ExperimentReportOut:
     """Convert an ``experiments.ExperimentReport`` into its response shape."""
+    comparison = report.comparison
     return ExperimentReportOut(
         name=report.name,
         description=report.description,
+        comparison=(
+            ArmComparisonOut(
+                metric=comparison.metric,
+                a_variant=comparison.a_variant,
+                b_variant=comparison.b_variant,
+                difference=comparison.difference,
+                low=comparison.low,
+                high=comparison.high,
+                confidence=comparison.confidence,
+                significant=comparison.significant,
+            )
+            if comparison is not None
+            else None
+        ),
         variants=[
             VariantReportOut(
                 variant=variant.variant,

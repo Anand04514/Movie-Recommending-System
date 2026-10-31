@@ -153,10 +153,88 @@ class VariantReport:
 
 
 @dataclass(frozen=True)
+class ArmComparison:
+    """The gap between two arms, with the uncertainty that a small sample leaves behind.
+
+    A bare percentage difference invites reading noise as a result: 3 of 10 picks against 2 of 10 is
+    "10 points" of nothing. The interval is Newcombe's square-and-add method for a difference of
+    proportions, which behaves well at the small counts an experiment actually has on day one.
+    """
+
+    metric: str
+    a_variant: str
+    b_variant: str
+    difference: float
+    low: float
+    high: float
+    confidence: float
+    significant: bool
+
+
+Z_95 = 1.959963984540054
+
+
+def wilson_interval(successes: int, trials: int, *, z: float = Z_95) -> tuple[float, float] | None:
+    """Score interval for one proportion. Not the textbook normal approximation.
+
+    The normal approximation collapses to zero width when a rate is 0% or 100%, which is exactly
+    where a new experiment starts, so the score interval is used instead.
+    """
+    if trials <= 0:
+        return None
+    p = successes / trials
+    denominator = 1 + z * z / trials
+    centre = (p + z * z / (2 * trials)) / denominator
+    spread = z * ((p * (1 - p) / trials + z * z / (4 * trials * trials)) ** 0.5) / denominator
+    return max(0.0, centre - spread), min(1.0, centre + spread)
+
+
+def compare_arms(
+    a: VariantReport, b: VariantReport, *, metric: str = "engagement_rate", z: float = Z_95
+) -> ArmComparison | None:
+    """Effect of arm ``b`` over arm ``a`` on one rate, or ``None`` when either has no traffic."""
+    rate_a = getattr(a, metric)
+    rate_b = getattr(b, metric)
+    if rate_a is None or rate_b is None:
+        return None
+    interval_a = wilson_interval(
+        a.likes + a.rejects + a.clicks + a.rated_after, a.impressions, z=z
+    )
+    interval_b = wilson_interval(
+        b.likes + b.rejects + b.clicks + b.rated_after, b.impressions, z=z
+    )
+    if interval_a is None or interval_b is None:  # pragma: no cover - rates exist only with traffic
+        return None
+    low_a, high_a = interval_a
+    low_b, high_b = interval_b
+    # Newcombe's square-and-add: the two arms are independent, so their errors add in quadrature.
+    spread = (((rate_b - low_b) ** 2) + ((high_a - rate_a) ** 2)) ** 0.5
+    difference = rate_b - rate_a
+    low, high = difference - spread, difference + spread
+    return ArmComparison(
+        metric=metric,
+        a_variant=a.variant,
+        b_variant=b.variant,
+        difference=difference,
+        low=low,
+        high=high,
+        confidence=0.95,
+        significant=low > 0 or high < 0,
+    )
+
+
+@dataclass(frozen=True)
 class ExperimentReport:
     name: str
     description: str
     variants: list[VariantReport]
+
+    @property
+    def comparison(self) -> ArmComparison | None:
+        """The first two arms compared on end-to-end engagement, or ``None`` under three arms."""
+        if len(self.variants) != 2:
+            return None
+        return compare_arms(self.variants[0], self.variants[1])
 
 
 def _verdicts_by_movie(

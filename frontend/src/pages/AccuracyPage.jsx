@@ -41,6 +41,14 @@ function formatRate(value) {
   return value == null ? "—" : PERCENT.format(value);
 }
 
+// A gap in rates is easier to read in points than in percent-of-a-percent.
+function formatPoints(value) {
+  if (value == null) return "—";
+  const points = value * 100;
+  const sign = points > 0 ? "+" : points < 0 ? "−" : "";
+  return `${sign}${Math.abs(points).toFixed(1)} pts`;
+}
+
 function EngagementPanel() {
   const [state, setState] = useState({ status: "loading", experiment: null, error: null });
 
@@ -63,10 +71,14 @@ function EngagementPanel() {
   const arms = experiment?.variants ?? [];
   const impressions = arms.reduce((total, arm) => total + arm.impressions, 0);
   const enoughTraffic = arms.every((arm) => arm.impressions >= ENGAGEMENT_MIN_IMPRESSIONS);
-  const bestPositive = Math.max(...arms.map((arm) => arm.positive_rate ?? -1));
+  // The leading arm needs both enough traffic and an interval that excludes zero. Percentages
+  // alone turned 3-of-10 against 2-of-10 into a "10 point win".
+  const comparison = experiment?.comparison ?? null;
   const leader =
-    enoughTraffic && bestPositive >= 0
-      ? arms.find((arm) => arm.positive_rate === bestPositive)?.variant
+    enoughTraffic && comparison?.significant
+      ? comparison.difference > 0
+        ? comparison.b_variant
+        : comparison.a_variant
       : null;
 
   return (
@@ -126,9 +138,21 @@ function EngagementPanel() {
               </tbody>
             </table>
           </div>
+          {comparison ? (
+            <p className="table-note">
+              Engagement gap, {methodName(comparison.b_variant)} minus{" "}
+              {methodName(comparison.a_variant)}: {formatPoints(comparison.difference)} ({
+                Math.round(comparison.confidence * 100)
+              }% CI {formatPoints(comparison.low)} to {formatPoints(comparison.high)}).{" "}
+              {comparison.significant
+                ? "The interval excludes zero, so the gap is not measured noise."
+                : "The interval crosses zero, so there is no clear leader yet."}
+            </p>
+          ) : null}
           <p className="table-note">
             Only lists the experiment assigned are counted; a model the user picked by hand is
-            excluded. Like rate is likes over like-or-reject verdicts.
+            excluded. Like rate is likes over like-or-reject verdicts; the gap above is the share
+            of shown picks that produced any signal at all.
             {enoughTraffic
               ? ""
               : ` With fewer than ${ENGAGEMENT_MIN_IMPRESSIONS} shown picks per arm this is a tally, not a result.`}

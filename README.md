@@ -100,7 +100,7 @@ uv run python scripts/precompute_recs.py --users 200 --limit 50
 | Feedback | Like / Not for me on every pick; the action is logged and the film leaves the next list immediately. Opening a card logs a click against the model that served it |
 | Discovery | A small tail slice is relabelled when it genuinely steps outside the profile, and badged “Discovery” |
 | Compare | Any two of five methods side by side for the same profile, with picks both lists agree on marked “Both” |
-| Accuracy | RMSE, MAE, precision/recall/NDCG@10 and coverage for eight methods, charted from `model_runs`, plus A/B engagement and the new-release row's share and like rate |
+| Accuracy | RMSE, MAE, precision/recall/NDCG@10 and coverage for eight methods, charted from `model_runs`, plus A/B engagement with its 95% interval and the new-release row's share and like rate |
 | A/B default model | Sticky per-user assignment between the hybrid and user-CF; the arm is shown on the page and its engagement is reported |
 | Cached candidates | `precomputed_recs` holds scored candidates per user and method; repeat page loads skip the model, and stale rows are never served |
 | Posters and details | Titles open a details dialog; posters and synopses load lazily from TMDB and cache locally |
@@ -323,8 +323,14 @@ defensible:
 
 `GET /api/experiments` returns, per arm: assigned users, impressions, likes, rejects, clicks,
 impressions later rated, like rate (likes ÷ like-or-reject verdicts) and rated rate. The accuracy
-page renders it as **Live engagement**, and it refuses to call a leader below 50 impressions per arm
-— with traffic this young the honest answer is a tally, not a result.
+page renders it as **Live engagement**.
+
+The report also returns a `comparison`: the gaps in engagement between the two arms with a 95%
+interval, using **Newcombe's square-and-add** method on Wilson score intervals. Two things follow
+from that choice. The interval is honest at the extremes — a 0%-or-100% arm has no width under the
+textbook normal approximation, and that is exactly where a new experiment starts. And the page only
+names a leading arm when the whole interval is on one side of zero, on top of the 50-impressions-per-
+arm floor: 3 of 10 against 2 of 10 is a "10 point win" that the interval refuses to endorse.
 
 ### Cached candidates (5.9)
 
@@ -518,7 +524,7 @@ What the numbers say:
 | `POST` | `/api/feedback` | ✔ | Record `liked`, `rejected` or `clicked` with the algorithm that showed the pick |
 | `DELETE` | `/api/feedback/{movie_id}` | ✔ | Undo feedback for a film |
 | `GET` | `/api/model-runs?limit=` | – | Latest evaluation per method, newest first |
-| `GET` | `/api/experiments` | – | Every A/B experiment with per-arm users, impressions, likes, rejects, clicks and the rates derived from them |
+| `GET` | `/api/experiments` | – | Every A/B experiment with per-arm users, impressions, likes, rejects, clicks, the rates derived from them, and the two-arm gap with its 95% interval |
 | `GET` | `/api/new-releases/report` | – | The recency row's impressions, share of all impressions, films, likes, rejects, clicks and the rates derived from them |
 
 ## Deploying it
@@ -672,18 +678,19 @@ exactly what a managed database needs, because `CREATE EXTENSION` is not always 
 ## Tests and lint
 
 ```bash
-uv run pytest        # 381 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 390 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
                      #            feedback, A/B assignment and attribution, cache validity, TMDB
                      #            search/ingestion/cold start/recency, app-rating merge and retrain,
                      #            deployment artifact bundle, SPA serving, production settings,
-                     #            the new-release engagement report, search ranking, the
-                     #            evaluation-report import and the PostgreSQL verifier's contract
+                     #            the new-release engagement report, search ranking, the A/B
+                     #            interval arithmetic, the evaluation-report import and the
+                     #            PostgreSQL verifier's contract
 uv run ruff check .  # clean
 cd frontend
-npm test             # 108 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
-                     #            the click beacon, model switch, compare, dashboard, engagement,
-                     #            session, addable TMDB results, the new-release row
+npm test             # 110 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
+                     #            the click beacon, model switch, compare, dashboard, the A/B gap
+                     #            and its interval, session, addable TMDB results, the new-release row
 npm run build        # production build
 ```
 
@@ -821,9 +828,10 @@ data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.jso
 - With a two-film profile, reasons can all cite the same source film and predicted scores sit close
   to the user's mean; both improve as the profile grows. The discovery slice only activates once a
   profile has enough signal to define "usual", so brand-new users see none.
-- The A/B report has **no significance test** and no minimum-runtime rule: it reports counts and
-  refuses to name a leader under 50 impressions per arm, but a proper sequential test would be the
-  next step before trusting a small gap.
+- The A/B comparison is a **fixed-horizon interval, not a sequential test**. It stops the page from
+  crowning noise, but looking at it repeatedly and stopping when it clears zero inflates the false
+  positive rate; a sequential design (or a pre-registered sample size) is the honest next step. It
+  also compares exactly two arms on engagement, so a third arm or a second metric needs more code.
 - **Only one experiment is defined** (`default_model_v1`). The registry supports more, but assignment
   and the report are per-experiment and there is no scheduling or auto-stop logic.
 - The cache covers **unfiltered page loads only**, because a filtered request needs a pool far wider
