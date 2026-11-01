@@ -2114,6 +2114,72 @@ h1 {
   }
 }
 
+/* --------------------------------------------------- account & password reset */
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.account-grid .panel {
+  margin: 0 0 20px;
+}
+
+.danger-zone {
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.danger-zone h3 {
+  color: var(--danger);
+}
+
+.button.danger {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--danger);
+}
+
+.button.danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.2);
+}
+
+.button.danger:disabled {
+  opacity: 0.45;
+}
+
+.auth-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+
+.auth-sent p {
+  margin: 0 0 12px;
+  line-height: 1.65;
+}
+
+.auth-sent .button {
+  margin-top: 6px;
+}
+
+.link-button.forgot {
+  margin-top: 14px;
+  align-self: flex-start;
+}
+
+.link-button.is-current {
+  color: var(--text);
+}
+
+@media (max-width: 900px) {
+  .account-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;

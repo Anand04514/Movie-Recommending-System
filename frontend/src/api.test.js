@@ -88,6 +88,39 @@ describe("api client", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("/api/onboarding?limit=10");
   });
 
+  it("sends a reset request without a token and the confirmation with one", async () => {
+    const fetchMock = stubFetch();
+
+    await api.requestPasswordReset("ada@example.com");
+    await api.confirmPasswordReset("tok_1234567890abcdef", "a long password");
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/auth/password-reset");
+    expect(options.method).toBe("POST");
+    expect(options.headers.Authorization).toBeUndefined();
+    expect(JSON.parse(options.body)).toEqual({ email: "ada@example.com" });
+
+    const [confirmUrl, confirmOptions] = fetchMock.mock.calls[1];
+    expect(confirmUrl).toBe("/api/auth/password-reset/confirm");
+    expect(JSON.parse(confirmOptions.body)).toEqual({
+      token: "tok_1234567890abcdef",
+      password: "a long password",
+    });
+  });
+
+  it("deletes the account with the password and the bearer token", async () => {
+    api.storeToken("token-abc");
+    const fetchMock = stubFetch({ status: 204, body: null });
+
+    await expect(api.deleteAccount("correct horse battery")).resolves.toBeNull();
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/auth/delete-account");
+    expect(options.method).toBe("POST");
+    expect(options.headers.Authorization).toBe("Bearer token-abc");
+    expect(JSON.parse(options.body)).toEqual({ password: "correct horse battery" });
+  });
+
   it("surfaces a validation detail array as readable text", async () => {
     stubFetch({
       ok: false,

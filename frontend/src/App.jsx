@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import * as api from "./api.js";
+import AccountPage from "./pages/AccountPage.jsx";
 import AccuracyPage from "./pages/AccuracyPage.jsx";
 import AuthPage from "./pages/AuthPage.jsx";
 import ComparePage from "./pages/ComparePage.jsx";
 import OnboardingPage from "./pages/OnboardingPage.jsx";
 import RatingsPage from "./pages/RatingsPage.jsx";
 import RecommendationsPage from "./pages/RecommendationsPage.jsx";
+import ResetPasswordPage from "./pages/ResetPasswordPage.jsx";
 import SearchPage from "./pages/SearchPage.jsx";
+
+// A reset link arrives as ``/?reset=<token>``. It is read once, before render, so the token is not
+// lost to a re-render and does not linger in state after it has been used.
+function readResetToken() {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("reset");
+}
 
 const NAV = [
   { id: "discover", label: "Discover" },
@@ -17,13 +26,15 @@ const NAV = [
   { id: "accuracy", label: "Accuracy" },
 ];
 // Only the pages built on your own ratings require an account.
-const PRIVATE_VIEWS = new Set(["for-you", "ratings", "compare"]);
+const PRIVATE_VIEWS = new Set(["for-you", "ratings", "compare", "account"]);
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [checkingSession, setCheckingSession] = useState(() => Boolean(api.getStoredToken()));
-  const [view, setView] = useState("discover");
+  const [resetToken] = useState(readResetToken);
+  const [view, setView] = useState(() => (readResetToken() ? "reset" : "discover"));
   const [pendingView, setPendingView] = useState("for-you");
+  const [authMode, setAuthMode] = useState("login");
   const [authMessage, setAuthMessage] = useState("");
   const [ratings, setRatings] = useState([]);
   const [ratingsStatus, setRatingsStatus] = useState({ loading: false, error: null });
@@ -88,8 +99,9 @@ export default function App() {
   );
 
   const openAuth = useCallback(
-    (message = "Sign in to keep going.", nextView) => {
+    (message = "Sign in to keep going.", nextView, mode = "login") => {
       setAuthMessage(message);
+      setAuthMode(mode);
       setPendingView(nextView ?? (view === "auth" ? "for-you" : view));
       setView("auth");
     },
@@ -157,6 +169,25 @@ export default function App() {
     setView("discover");
   }
 
+  // A completed reset signs this browser in with the fresh token, and the link is stripped from the
+  // address bar so a reload cannot try to redeem a spent one.
+  function handleResetComplete(profile) {
+    setUser(profile);
+    setRefreshKey((key) => key + 1);
+    setAuthMessage("");
+    if (typeof window !== "undefined" && window.history?.replaceState) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    setView("for-you");
+  }
+
+  function handleDeleted() {
+    api.clearToken();
+    setUser(null);
+    setRatings([]);
+    setView("discover");
+  }
+
   const explore = () => setView("discover");
 
   return (
@@ -192,14 +223,16 @@ export default function App() {
 
         <div className="account">
           {user ? (
-            <>
+            <>              <button type="button" className="account-name" onClick={() => setView("ratings")} title="Your ratings">
+                {user.display_name}
+              </button>
               <button
                 type="button"
-                className="account-name"
-                onClick={() => setView("ratings")}
-                title="Your ratings"
+                className={`link-button ${view === "account" ? "is-current" : ""}`}
+                onClick={() => setView("account")}
+                aria-current={view === "account" ? "page" : undefined}
               >
-                {user.display_name}
+                Account
               </button>
               <button type="button" className="link-button" onClick={signOut}>
                 Sign out
@@ -265,6 +298,18 @@ export default function App() {
 
         {!checkingSession && view === "accuracy" ? <AccuracyPage /> : null}
 
+        {!checkingSession && view === "account" ? (
+          <AccountPage user={user} onDeleted={handleDeleted} />
+        ) : null}
+
+        {!checkingSession && view === "reset" ? (
+          <ResetPasswordPage
+            token={resetToken}
+            onReset={handleResetComplete}
+            onNeedNewLink={() => openAuth("", "for-you", "forgot")}
+          />
+        ) : null}
+
         {!checkingSession && view === "ratings" ? (
           <RatingsPage
             user={user}
@@ -281,6 +326,7 @@ export default function App() {
 
         {!checkingSession && view === "auth" ? (
           <AuthPage
+            initialMode={authMode}
             message={authMessage}
             onAuthenticated={handleAuthenticated}
             onCancel={() => setView("discover")}

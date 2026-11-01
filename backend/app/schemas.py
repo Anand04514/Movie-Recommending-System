@@ -52,6 +52,30 @@ class LoginRequest(BaseModel):
         return value.strip().lower()
 
 
+class PasswordResetRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return _clean_email(value)
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=16, max_length=200)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class AccountDeleteRequest(BaseModel):
+    """Deletion is irreversible, so it re-asks for the password instead of trusting the token."""
+
+    password: str = Field(min_length=1, max_length=128)
+
+
+class MessageOut(BaseModel):
+    message: str
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

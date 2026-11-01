@@ -107,6 +107,8 @@ uv run python scripts/precompute_recs.py --users 200 --limit 50
 | Search beyond the dataset | When the catalog returns fewer than five matches, TMDB is asked too; hits are labelled “Not in catalog” and can be added in one click |
 | New releases | Films newer than MovieLens are scored by content (genres, keywords, decade), badged “New”, and shown in their own row; a small decaying freshness bonus re-ranks them |
 | Cold start | Users with no usable signal get the popularity baseline plus an onboarding prompt |
+| Password reset | A single-use, 30-minute link by email; redeeming it retires every session the account had open. Asking twice leaves only the newest link working |
+| Delete account | Password re-entry plus a typed confirmation; ratings, feedback, impressions and cached picks go with it, and the catalog is untouched |
 
 The demo users (`password_hash="!"`, so they can never sign in) exist to give the catalog rating
 history; recommendation serving never reads them at request time, since neighbors are precomputed.
@@ -501,6 +503,50 @@ What the numbers say:
   content and the hybrid score every pair (0.00%), which is why their RMSE is more directly
   comparable with each other than with the neighbor models.
 
+## Accounts, resets and deletion
+
+Signup and login are the ordinary half of this; the two flows people actually get stuck on are the
+ones below.
+
+**Reset.** `POST /api/auth/password-reset` answers `202` with one fixed sentence for a registered
+address, an unknown one, a seeded demo account and a failed send alike, so it cannot be used to test
+whether somebody has an account. For a real account it mints a 256-bit token, stores only its
+SHA-256 digest, and mails a link built from `APP_BASE_URL` — never from the request's Host header.
+Redeeming it at `POST /api/auth/password-reset/confirm` sets the password, marks the token spent and
+returns a fresh access token.
+
+The part that is easy to get wrong is the session: access tokens are stateless, so a reset that
+changed only the password would leave a stolen token valid for the rest of its week. `users.token_version`
+is baked into every token and bumped whenever the password changes, so a reset signs out the other
+devices — the response's new token is the one that keeps working. Expiry is 30 minutes
+(`PASSWORD_RESET_TTL_MINUTES`), and requesting a second link drops the first.
+
+**Email.** Delivery is plain SMTP, because that is the one interface Gmail app passwords, Resend,
+Postmark, Mailgun and a company relay all speak; there is no vendor SDK here. Set `SMTP_HOST`,
+`SMTP_FROM` and the credentials in `.env`, and choose STARTTLS (587) or implicit TLS (465). With no
+SMTP settings the app still runs, still signs people up and still serves recommendations — it simply
+cannot send mail, which it logs rather than pretends about. An instance in that state resets a
+password with the operator script instead:
+
+```bash
+uv run python scripts/reset_password.py --email ada@example.com                # prints a link
+uv run python scripts/reset_password.py --email ada@example.com --set-password # prompts, never echoes
+```
+
+The API never returns the token over HTTP. If it did, anyone could reset any account by typing an
+address; a link in a response body is a full account takeover.
+
+**Deletion.** `POST /api/auth/delete-account` asks for the password again, so a borrowed session
+cannot erase an account, and a wrong password is a `403` that changes nothing. Deletion removes the
+ratings, feedback, impressions, experiment assignments, cached candidates and outstanding reset
+tokens, then the user row. The A/B counters lose that user's impressions along with them, which is
+the correct outcome for data someone asked to be removed. Films are never touched: the catalog is the
+dataset, not the user's.
+
+Not built, and named rather than implied: there is **no email verification**, **no rate limiting** on
+the auth endpoints, **no account export**, and no second factor. Of those, the rate limit is the one
+that matters before a public demo, and it belongs in front of the router rather than inside it.
+
 ## API
 
 | Method | Path | Auth | Notes |
@@ -509,6 +555,9 @@ What the numbers say:
 | `POST` | `/api/auth/signup` | – | Returns the user and an access token |
 | `POST` | `/api/auth/login` | – | Same shape as signup |
 | `GET` | `/api/auth/me` | ✔ | Current user profile |
+| `POST` | `/api/auth/password-reset` | – | `202` with the same message for known, unknown and failed sends; mails a single-use link |
+| `POST` | `/api/auth/password-reset/confirm` | – | `{token, password}` → new session; `400` for unknown, spent or expired links |
+| `POST` | `/api/auth/delete-account` | ✔ | `{password}` → `204`; deletes the account and its data, `403` on a wrong password |
 | `GET` | `/api/movies/search?q=&limit=&include_external=` | – | Ranked by match tier, then rating count; `external` holds addable TMDB hits when the catalog has fewer than five matches |
 | `GET` | `/api/movies/genres` | – | Every genre label in the catalog, for the filter chips |
 | `GET` | `/api/movies/{id}` | – | Catalog detail, enriched from TMDB once when a key is set |
@@ -862,6 +911,13 @@ data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.jso
 - The comparison view has the same evidence limit on both sides and no per-user caching; it runs two
   fold-ins per request and is comfortably fast at development scale, but would need caching before a
   large public deployment.
+- **No reset email has been delivered to a real mailbox from this checkout.** The SMTP client is
+exercised against a stub server that records the message, so the link format, the hashing and the
+single-use rule are tested; deliverability (SPF, DKIM, a provider's rate limits) is a property of
+whichever provider is configured, and nothing here has been through one.
+- **The auth endpoints are not rate limited**, and there is no email verification, account export or
+second factor. A public deployment wants a request limit in front of signup, login and
+`/api/auth/password-reset` before anything else.
 - **Nothing is deployed yet.** The image defined by `Dockerfile` has not been built (no Docker on this
   machine) and the Render blueprint has not been applied to a real account; what was verified is the
   production server, the entrypoint and the artifact bundle, locally. [Deploying it](#deploying-it)

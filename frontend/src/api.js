@@ -105,6 +105,26 @@ export function getMe() {
   return request("/auth/me", { auth: true });
 }
 
+// The answer is deliberately identical for a registered address, an unknown one and a failed send.
+export function requestPasswordReset(email) {
+  return request("/auth/password-reset", { method: "POST", body: { email } });
+}
+
+export function confirmPasswordReset(token, password) {
+  return request("/auth/password-reset/confirm", {
+    method: "POST",
+    body: { token, password },
+  });
+}
+
+export function deleteAccount(password) {
+  return request("/auth/delete-account", {
+    method: "POST",
+    body: { password },
+    auth: true,
+  });
+}
+
 export function listRatings() {
   return request("/ratings", { auth: true });
 }

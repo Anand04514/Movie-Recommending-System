@@ -34,6 +34,27 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7
 
+    # Account lifecycle. The reset link is built from this origin, so a deployment must set it to
+    # its public URL or the link in the email points at localhost.
+    app_base_url: str = "http://localhost:5173"
+    password_reset_ttl_minutes: int = 30
+    # SMTP is the delivery channel. Any provider works (Gmail app password, Resend, Postmark,
+    # Mailgun, a company relay); leaving it empty keeps the app running and sends nothing.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = "Movie Recs <no-reply@localhost>"
+    # STARTTLS on 587, implicit TLS on 465: exactly one of these should be true.
+    smtp_starttls: bool = True
+    smtp_ssl: bool = False
+    smtp_timeout_seconds: float = 10.0
+
+    @property
+    def smtp_configured(self) -> bool:
+        """Whether a reset email can actually be sent from this instance."""
+        return bool(self.smtp_host and self.smtp_from)
+
     # Serving (Phase 6). With the React build present, one container can serve the API and the app:
     # same origin, no CORS, one deploy. Off by default so dev and tests keep an API-only surface.
     serve_frontend: bool = False

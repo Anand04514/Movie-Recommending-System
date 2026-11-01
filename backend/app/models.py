@@ -40,10 +40,47 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+    # Bumped whenever the password changes. Access tokens carry the version they were issued
+    # against, so a reset or a change signs every older session out instead of leaving a stolen
+    # token valid for the rest of its week.
+    token_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    password_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     ratings: Mapped[list[Rating]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+
+
+class PasswordResetToken(Base):
+    """A single-use password reset grant, stored as a hash.
+
+    Only the SHA-256 digest is persisted: a leaked database row cannot be turned back into a
+    working link, the same reasoning that applies to passwords. ``used_at`` makes a token
+    single-use and keeps the audit trail; ``expires_at`` bounds the window to minutes.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship()
+
+    __table_args__ = (Index("ix_password_reset_tokens_user", "user_id", "expires_at"),)
 
 
 class Movie(Base):
