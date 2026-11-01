@@ -195,14 +195,6 @@ class RecommendationFiltersApplied(BaseModel):
     min_score: float | None = None
 
 
-ALGORITHM_NAMES = (
-    "item_cf",
-    "user_cf",
-    "svd",
-    "content",
-    "hybrid",
-    "popularity",
-)
 AlgorithmName = Literal[
     "item_cf", "user_cf", "svd", "content", "hybrid", "popularity"
 ]

@@ -13,7 +13,6 @@ from recsys.baselines import (
     global_mean,
     item_counts_and_sums,
     item_means,
-    popularity_ranking,
 )
 from recsys.item_cf import (
     build_item_neighbors,
@@ -68,14 +67,6 @@ def test_damped_item_mean_shrinks_small_samples_toward_the_global_mean() -> None
     assert damped[3] < mu + 0.5
     # item 0 has two high ratings; damping moves it down toward mu.
     assert damped[0] < undamped[0]
-
-
-def test_popularity_ranking_is_deterministic_and_filters() -> None:
-    matrix = build_matrix()
-    assert popularity_ranking(matrix, limit=4).tolist() == [1, 2, 0, 3]
-    assert popularity_ranking(matrix, limit=2, exclude={1}).tolist() == [2, 0]
-    assert popularity_ranking(matrix, limit=10, min_count=2).tolist() == [1, 2, 0]
-    assert popularity_ranking(matrix, limit=10, min_count=5).size == 0
 
 
 def test_mean_center_subtracts_only_observed_ratings() -> None:

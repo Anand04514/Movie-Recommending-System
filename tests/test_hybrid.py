@@ -12,22 +12,16 @@ from recsys.hybrid import (
     blend_rows,
     combine_predictions,
     load_weights,
-    normalise_row,
     save_weights,
 )
 
 
-def test_normalise_row_scales_to_the_best_positive_score() -> None:
-    row = normalise_row(np.array([4.0, 2.0, -1.0, 0.0]))
-    assert row.tolist() == [1.0, 0.5, 0.0, 0.0]
-
-
-def test_normalise_row_keeps_blocked_items_at_zero_and_handles_no_signal() -> None:
-    assert normalise_row(np.array([-np.inf, 3.0])).tolist() == [0.0, 1.0]
-    assert normalise_row(np.array([-np.inf, -np.inf])).tolist() == [0.0, 0.0]
-    assert normalise_row(np.array([-2.0, 0.0])).tolist() == [0.0, 0.0]
-    with pytest.raises(ValueError, match="one-dimensional"):
-        normalise_row(np.zeros((2, 2)))
+def test_blending_scales_to_the_best_positive_score_and_floors_at_zero() -> None:
+    zeros = np.zeros(2)
+    assert blend_rows(np.array([4.0, 2.0]), zeros, weight=1.0).tolist() == [1.0, 0.5]
+    # Scores that are all non-positive normalise to zero rather than flipping sign.
+    non_positive = blend_rows(np.array([-2.0, 0.0]), zeros, weight=0.5)
+    assert non_positive.tolist() == [0.0, 0.0]
 
 
 def test_weight_one_reproduces_collaborative_ranking_and_zero_reproduces_content() -> None:

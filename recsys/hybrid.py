@@ -21,27 +21,6 @@ import numpy as np
 DEFAULT_COLLABORATIVE_WEIGHT = 0.65
 DEFAULT_COLLABORATIVE_BASE = "user_cf"
 COLLABORATIVE_BASES = ("item_cf", "user_cf")
-WEIGHT_FILE = "hybrid_weights.json"
-
-
-def normalise_row(scores: np.ndarray) -> np.ndarray:
-    """Scale a score row so its best positive score is 1; everything else stays ordered.
-
-    ``-inf`` marks a blocked item and is preserved as zero here; :func:`blend_rows` turns a row
-    that is blocked in *both* models back into ``-inf``.
-    """
-    row = np.asarray(scores, dtype="float64")
-    if row.ndim != 1:
-        raise ValueError("scores must be one-dimensional")
-    finite = np.isfinite(row)
-    output = np.zeros_like(row)
-    if not finite.any():
-        return output
-    positive = np.where(finite, np.maximum(row, 0.0), 0.0)
-    best = float(positive.max())
-    if best > 0:
-        output = positive / best
-    return output
 
 
 def blend_rows(

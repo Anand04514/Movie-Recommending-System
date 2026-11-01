@@ -27,7 +27,6 @@ from scripts.artifact_bundle import (
     safe_extract,
     sha256_of,
     verify_archive,
-    verify_contents,
 )
 from scripts.build_artifact_bundle import main as build_main
 from scripts.fetch_artifacts import main as fetch_main
@@ -87,7 +86,6 @@ def test_the_bundle_holds_every_serving_artifact_and_nothing_else(
 
     # The manifest inside the archive is the same one, and every payload matches its hash.
     assert read_manifest(output)["files"].keys() == expected
-    verify_contents(output)
 
 
 def test_a_missing_catalog_is_named_rather_than_silently_left_out(
@@ -124,8 +122,6 @@ def test_a_payload_that_disagrees_with_its_manifest_is_caught(tmp_path: Path) ->
         tmp_path / "tampered.tar.gz",
         {"item_neighbors.npz": payload, MANIFEST_NAME: json.dumps(manifest).encode()},
     )
-    with pytest.raises(BundleError, match="does not match the manifest"):
-        verify_contents(archive)
     with pytest.raises(BundleError, match="does not match its manifest"):
         safe_extract(archive, tmp_path / "out")
 

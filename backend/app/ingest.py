@@ -35,10 +35,6 @@ def movie_id_for(tmdb_id: int) -> int:
     return TMDB_ID_BASE + int(tmdb_id)
 
 
-def is_tmdb_movie_id(movie_id: int) -> bool:
-    return int(movie_id) >= TMDB_ID_BASE
-
-
 def find_by_tmdb_id(db: Session, tmdb_id: int) -> Movie | None:
     return db.scalar(select(Movie).where(Movie.tmdb_id == int(tmdb_id)))
 

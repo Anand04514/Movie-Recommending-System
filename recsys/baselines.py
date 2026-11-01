@@ -1,11 +1,9 @@
-"""Simple, hard-to-beat baselines: global mean, damped item mean, popularity.
+"""Simple, hard-to-beat baselines: global mean and damped item mean.
 
 All functions take a users x movies ``scipy.sparse`` matrix of raw ratings and never densify it.
 """
 
 from __future__ import annotations
-
-from collections.abc import Iterable
 
 import numpy as np
 from scipy import sparse
@@ -46,27 +44,3 @@ def damped_item_mean(matrix: sparse.spmatrix, damping: float = 10.0) -> np.ndarr
     means = np.full(counts.shape, mu, dtype="float64")
     np.divide(sums + damping * mu, denominator, out=means, where=denominator > 0)
     return means
-
-
-def popularity_ranking(
-    matrix: sparse.spmatrix,
-    *,
-    limit: int = 10,
-    exclude: Iterable[int] = (),
-    min_count: int = 0,
-) -> np.ndarray:
-    """Item indexes ordered by rating count, most rated first.
-
-    Ties break on lower item index so results are deterministic.
-    """
-    if limit < 1:
-        raise ValueError("limit must be positive")
-    counts, _ = item_counts_and_sums(matrix)
-    order = np.lexsort((np.arange(counts.size), -counts))
-    blocked = set(int(index) for index in exclude)
-    results = [
-        int(index)
-        for index in order
-        if counts[index] >= min_count and int(index) not in blocked
-    ]
-    return np.asarray(results[:limit], dtype="int64")

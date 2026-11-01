@@ -18,7 +18,6 @@
   --skeleton-base: #1a202c;
   --accent: #f2c14e;
   --accent-deep: #d8a83a;
-  --accent-soft: rgba(242, 193, 78, 0.12);
   --on-accent: #17130a;
   --danger: #f87171;
   --danger-text: #fca5a5;
@@ -52,7 +51,6 @@
   --skeleton-base: #efe9dd;
   --accent: #8a5b00;
   --accent-deep: #6b4500;
-  --accent-soft: rgba(138, 91, 0, 0.1);
   --on-accent: #fffdf7;
   --danger: #b42318;
   --danger-text: #8f1d16;

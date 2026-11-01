@@ -757,7 +757,7 @@ exactly what a managed database needs, because `CREATE EXTENSION` is not always 
 ## Tests and lint
 
 ```bash
-uv run pytest        # 390 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
+uv run pytest        # 413 tests: titles, pipeline, metrics, baselines, item/user CF, SVD fold-in,
                      #            content, hybrid, serendipity, evaluation, API, onboarding,
                      #            feedback, A/B assignment and attribution, cache validity, TMDB
                      #            search/ingestion/cold start/recency, app-rating merge and retrain,
@@ -767,7 +767,7 @@ uv run pytest        # 390 tests: titles, pipeline, metrics, baselines, item/use
                      #            PostgreSQL verifier's contract
 uv run ruff check .  # clean
 cd frontend
-npm test             # 110 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
+npm test             # 131 component tests: cards, dialog, stars, filters, picks, onboarding, feedback,
                      #            the click beacon, model switch, compare, dashboard, the A/B gap
                      #            and its interval, session, addable TMDB results, the new-release row
 npm run build        # production build

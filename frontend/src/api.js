@@ -197,7 +197,3 @@ export function listExperiments({ signal } = {}) {
 export function getNewReleaseReport({ signal } = {}) {
   return request("/new-releases/report", { signal });
 }
-
-export function getHealth() {
-  return request("/health");
-}

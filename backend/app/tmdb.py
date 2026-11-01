@@ -25,7 +25,6 @@ from backend.app.config import get_settings
 API_BASE_URL = "https://api.themoviedb.org/3/movie/"
 SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
 IMAGE_BASE_URL = "https://image.tmdb.org/t/p/"
-ATTRIBUTION = "This product uses the TMDB API but is not endorsed or certified by TMDB."
 # TMDB's documented poster sizes; w342 covers a card, w780 a detail view.
 POSTER_SIZES = ("w92", "w154", "w185", "w342", "w500", "w780", "original")
 

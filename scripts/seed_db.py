@@ -29,23 +29,6 @@ if __package__ in (None, ""):
 from backend.app.db import get_engine, get_session_factory  # noqa: E402
 from backend.app.models import Movie, Rating, User  # noqa: E402
 
-MOVIE_COLUMNS = (
-    "id",
-    "title_display",
-    "title_search",
-    "release_year",
-    "genres",
-    "imdb_id",
-    "tmdb_id",
-    "poster_path",
-    "overview",
-    "tmdb_keywords",
-    "rating_count",
-    "in_model",
-    "source",
-    "added_at",
-)
-
 
 def _chunks(rows: list[dict], size: int = 5_000) -> Iterator[list[dict]]:
     for start in range(0, len(rows), size):

@@ -8,14 +8,15 @@
 
 export const THEME_KEY = "movie-recs.theme";
 
-export function systemTheme() {
+/** Read-only helpers: the module's public surface is resolveTheme/saveTheme/applyTheme. */
+function systemTheme() {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return "dark";
   }
   return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
-export function storedTheme() {
+function storedTheme() {
   try {
     const value = window.localStorage.getItem(THEME_KEY);
     return value === "light" || value === "dark" ? value : null;

@@ -155,25 +155,6 @@ def read_manifest(archive_path: str | Path) -> dict:
         return json.loads(extracted.read().decode("utf-8"))
 
 
-def verify_contents(archive_path: str | Path) -> None:
-    """Check every extracted file against the hashes recorded in its manifest."""
-    manifest = read_manifest(archive_path)
-    expected = manifest.get("files")
-    if not isinstance(expected, dict):
-        raise BundleError("manifest does not list file hashes")
-    with tarfile.open(archive_path, "r:gz") as archive:
-        for name, entry in expected.items():
-            try:
-                member = archive.getmember(name)
-            except KeyError as exc:
-                raise BundleError(f"manifest lists {name!r}, which the archive lacks") from exc
-            extracted = archive.extractfile(member)
-            data = extracted.read() if extracted is not None else b""
-            actual = hashlib.sha256(data).hexdigest()
-            if actual != entry.get("sha256"):
-                raise BundleError(f"{name} does not match the manifest hash")
-
-
 def download(
     url: str,
     destination: str | Path,

@@ -17,9 +17,6 @@ from backend.app.schemas import FeedbackCreate, FeedbackOut
 
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 
-VALID_ACTIONS = ("liked", "rejected", "clicked")
-
-
 def _to_out(row: Feedback) -> FeedbackOut:
     return FeedbackOut(
         movie_id=row.movie_id,
