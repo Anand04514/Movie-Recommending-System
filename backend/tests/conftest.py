@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 _TEST_DIR = Path(tempfile.mkdtemp(prefix="movie-recsys-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{(_TEST_DIR / 'test.db').as_posix()}"
 
+from backend.app import ratelimit  # noqa: E402
 from backend.app.db import get_engine, get_session_factory  # noqa: E402
 from backend.app.main import app  # noqa: E402
 from backend.app.models import Base, Movie  # noqa: E402
@@ -27,6 +28,8 @@ def clean_database() -> Iterator[None]:
     with get_engine().begin() as connection:
         for table in reversed(Base.metadata.sorted_tables):
             connection.execute(table.delete())
+    # Counters are process state: without this, one test's logins would spend another's budget.
+    ratelimit.reset()
     yield
 
 

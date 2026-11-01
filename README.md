@@ -543,9 +543,38 @@ tokens, then the user row. The A/B counters lose that user's impressions along w
 the correct outcome for data someone asked to be removed. Films are never touched: the catalog is the
 dataset, not the user's.
 
-Not built, and named rather than implied: there is **no email verification**, **no rate limiting** on
-the auth endpoints, **no account export**, and no second factor. Of those, the rate limit is the one
-that matters before a public demo, and it belongs in front of the router rather than inside it.
+**Rate limiting.** Signup, login and the reset request are limited in [ratelimit.py](backend/app/ratelimit.py)
+by a sliding window, on two dimensions that stop different attacks:
+
+- **the client** (`10/60` for login, `5/600` for signup, `5/900` for reset requests), which bounds one
+  machine hammering a form;
+- **the identity** — the email being attempted — which bounds a distributed attack on one account and
+  stops the reset endpoint being used to flood a single inbox (`3/3600`).
+
+Login counts **failures only**, and it counts them *after* the password check. That ordering is the
+whole point: a per-account limit that fires first would let a stranger lock the real owner out of
+their own account, which is a denial of service dressed up as a security feature. Guessing still runs
+out of budget; the person who knows the password never touches *that* counter.
+
+The per-address limit is the other half, and it deliberately applies to every attempt including
+correct ones: it bounds how much work one machine can ask for, and it clears within a minute. So a
+client that has just sent ten logins gets `429` even with the right password — retrying is what the
+`Retry-After` header is for. Rejected requests are never recorded, so backing off recovers on
+schedule instead of extending the ban.
+
+Each value is `requests/window_seconds` in `.env` (`RATE_LIMIT_LOGIN=10/60`); `0/0` disables a rule,
+and `RATE_LIMIT_ENABLED=0` turns the whole thing off for a load test. `TRUST_FORWARDED_FOR` is **off**
+by default: `X-Forwarded-For` is client-controlled, so trusting it unless a proxy actually sets it
+would reduce the limiter to decoration. Turn it on behind Render, Railway or nginx, or every caller
+shares one bucket.
+
+The honest limit: the counter lives in the process. The app runs one worker today (the model
+artifacts sit in memory), so that is correct rather than a shortcut, but a scaled-out deployment
+would have one budget per worker — the module's interface is small precisely so swapping it for
+Redis is a contained change.
+
+Not built, and named rather than implied: there is **no email verification**, **no account export**,
+and no second factor.
 
 ## API
 
@@ -915,9 +944,9 @@ data/processed/  derived Parquet, CSR matrix, id maps, neighbors, evaluation.jso
 exercised against a stub server that records the message, so the link format, the hashing and the
 single-use rule are tested; deliverability (SPF, DKIM, a provider's rate limits) is a property of
 whichever provider is configured, and nothing here has been through one.
-- **The auth endpoints are not rate limited**, and there is no email verification, account export or
-second factor. A public deployment wants a request limit in front of signup, login and
-`/api/auth/password-reset` before anything else.
+- **Rate-limit counters are per process and reset on restart**, which matches the one-worker design
+  but not a scaled-out one; there is also no email verification, no account export and no second
+  factor. Behind a proxy, `TRUST_FORWARDED_FOR` must be set or every caller shares one bucket.
 - **Nothing is deployed yet.** The image defined by `Dockerfile` has not been built (no Docker on this
   machine) and the Render blueprint has not been applied to a real account; what was verified is the
   production server, the entrypoint and the artifact bundle, locally. [Deploying it](#deploying-it)

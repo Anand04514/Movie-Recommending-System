@@ -21,6 +21,7 @@ from backend.app.db import get_db
 from backend.app.deps import get_current_user
 from backend.app.mailer import EmailDeliveryError, EmailNotConfigured, reset_email, send_email
 from backend.app.models import User
+from backend.app.ratelimit import client_limiter, identity_limiter, note_failed_attempt
 from backend.app.schemas import (
     AccountDeleteRequest,
     LoginRequest,
@@ -52,7 +53,12 @@ def _token_response(user: User) -> TokenResponse:
     )
 
 
-@router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/signup",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(client_limiter("signup", "rate_limit_signup"))],
+)
 def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenResponse:
     if db.scalar(select(User.id).where(User.email == payload.email)) is not None:
         raise HTTPException(
@@ -77,10 +83,17 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
     return _token_response(user)
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    dependencies=[Depends(client_limiter("login", "rate_limit_login"))],
+)
 def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
     user = db.scalar(select(User).where(User.email == payload.email))
     if user is None or not verify_password(payload.password, user.password_hash):
+        # Counted per account as well as per address. Only failures are counted, so someone who
+        # knows their password is never locked out by a stranger guessing at it.
+        note_failed_attempt("login_identity", "rate_limit_login_identity", payload.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password.",
@@ -98,6 +111,7 @@ def read_me(user: User = Depends(get_current_user)) -> User:
     "/password-reset",
     response_model=MessageOut,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(client_limiter("password_reset", "rate_limit_password_reset"))],
 )
 def request_password_reset(
     payload: PasswordResetRequest, db: Session = Depends(get_db)
@@ -107,7 +121,11 @@ def request_password_reset(
     A real account gets a single-use, time-boxed link by email. An unknown address, a seeded demo
     account and a failed send all answer exactly the same way, and the failure is logged for the
     operator rather than shown to the caller.
+
+    The per-identity limit is what stops this endpoint being used to flood one person's inbox: it
+    counts requests, not failures, because every request that reaches a real account sends mail.
     """
+    identity_limiter("password_reset_identity", "rate_limit_password_reset_identity", payload.email)
     settings = get_settings()
     user = db.scalar(select(User).where(User.email == payload.email))
 

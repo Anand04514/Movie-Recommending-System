@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     smtp_ssl: bool = False
     smtp_timeout_seconds: float = 10.0
 
+    # Rate limiting, per process. Each value is "requests/window_seconds"; 0 disables that rule.
+    rate_limit_enabled: bool = True
+    rate_limit_signup: str = "5/600"
+    rate_limit_login: str = "10/60"
+    rate_limit_login_identity: str = "10/600"
+    rate_limit_password_reset: str = "5/900"
+    rate_limit_password_reset_identity: str = "3/3600"
+    # Behind a proxy that sets X-Forwarded-For, turn this on or every caller shares one bucket.
+    # Off by default: the header is client-controlled and trusting it blindly defeats the limiter.
+    trust_forwarded_for: bool = False
+
     @property
     def smtp_configured(self) -> bool:
         """Whether a reset email can actually be sent from this instance."""
