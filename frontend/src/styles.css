@@ -21,6 +21,10 @@
   --on-accent: #17130a;
   --danger: #f87171;
   --danger-text: #fca5a5;
+  --danger-line: rgba(248, 113, 113, 0.3);
+  --danger-line-strong: rgba(248, 113, 113, 0.5);
+  --danger-fill: rgba(248, 113, 113, 0.08);
+  --danger-fill-strong: rgba(248, 113, 113, 0.2);
   --ok: #4ade80;
   --ok-text: #9ef0b7;
   --tint-faint: rgba(255, 255, 255, 0.018);
@@ -54,6 +58,10 @@
   --on-accent: #fffdf7;
   --danger: #b42318;
   --danger-text: #8f1d16;
+  --danger-line: rgba(180, 35, 24, 0.3);
+  --danger-line-strong: rgba(180, 35, 24, 0.5);
+  --danger-fill: rgba(180, 35, 24, 0.07);
+  --danger-fill-strong: rgba(180, 35, 24, 0.14);
   --ok: #157347;
   --ok-text: #0f5c39;
   --tint-faint: rgba(24, 22, 17, 0.028);
@@ -803,8 +811,8 @@ h1 {
   gap: 14px;
   margin: 18px 0;
   padding: 11px 14px;
-  border: 1px solid rgba(248, 113, 113, 0.32);
-  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid var(--danger-line);
+  background: var(--danger-fill);
   color: var(--danger-text);
   border-radius: 10px;
   font-size: 0.86rem;
@@ -951,8 +959,8 @@ h1 {
   margin: 0;
   padding: 9px 12px;
   border-radius: 8px;
-  background: rgba(248, 113, 113, 0.08);
-  border: 1px solid rgba(248, 113, 113, 0.28);
+  background: var(--danger-fill);
+  border: 1px solid var(--danger-line);
   color: var(--danger-text);
   font-size: 0.82rem;
   line-height: 1.5;
@@ -2086,8 +2094,8 @@ h1 {
 }
 
 .reaction.is-negative:hover:not(:disabled) {
-  border-color: rgba(248, 113, 113, 0.5);
-  background: rgba(248, 113, 113, 0.07);
+  border-color: var(--danger-line-strong);
+  background: var(--danger-fill);
   color: var(--danger-text);
 }
 
@@ -2214,7 +2222,7 @@ h1 {
 }
 
 .danger-zone {
-  border-color: rgba(248, 113, 113, 0.32);
+  border-color: var(--danger-line);
 }
 
 .danger-zone h3 {
@@ -2222,13 +2230,13 @@ h1 {
 }
 
 .button.danger {
-  border-color: rgba(248, 113, 113, 0.5);
-  background: rgba(248, 113, 113, 0.12);
+  border-color: var(--danger-line-strong);
+  background: var(--danger-fill);
   color: var(--danger);
 }
 
 .button.danger:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.2);
+  background: var(--danger-fill-strong);
 }
 
 .button.danger:disabled {
