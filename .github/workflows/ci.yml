@@ -1,0 +1,68 @@
+name: CI
+
+# Every push and every pull request, on any branch: the suite is fast (about a minute) and
+# a broken main branch costs more than the runners.
+on:
+  push:
+  pull_request:
+
+# A second push to the same branch makes the first run's verdict moot.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python · ruff + pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv reads the same uv.lock used locally, so CI resolves nothing on its own. The
+      # interpreter is pinned to the version the suite is verified against.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      # data/processed holds only .gitkeep in a fresh checkout; the suite builds its own
+      # fixtures and skips the precomputed artifacts, so nothing needs to be downloaded.
+      - name: Test
+        run: uv run pytest
+
+  frontend:
+    name: Frontend · test + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      # The backend serves frontend/dist, so a build that fails here would break the app
+      # even when every test passes.
+      - name: Build
+        run: npm run build
