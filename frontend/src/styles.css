@@ -1,18 +1,67 @@
+/* Two palettes, one set of rules. Every colour is a token, so the light theme is a second list of
+   values rather than a parallel stylesheet; a rule that reaches for a raw hex breaks in whichever
+   theme it was not written for. */
 :root {
   color-scheme: dark;
   --bg: #0a0c11;
   --panel: #12161f;
   --panel-raised: #171c27;
   --line: #242b3a;
+  --line-strong: #3a4357;
   --text: #eef1f7;
+  --text-soft: #c9d2e1;
   --muted: #98a2b3;
+  --text-faint: #7b8596;
+  --text-placeholder: #757f90;
+  --input-bg: #0b0e14;
+  --surface-sunken: #232b3a;
+  --skeleton-base: #1a202c;
   --accent: #f2c14e;
+  --accent-deep: #d8a83a;
   --accent-soft: rgba(242, 193, 78, 0.12);
+  --on-accent: #17130a;
   --danger: #f87171;
+  --danger-text: #fca5a5;
   --ok: #4ade80;
+  --ok-text: #9ef0b7;
+  --tint-faint: rgba(255, 255, 255, 0.018);
+  --tint-strong: rgba(255, 255, 255, 0.05);
+  --overlay: rgba(4, 6, 10, 0.72);
+  --shadow-strong: rgba(0, 0, 0, 0.55);
   --radius: 16px;
   --display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+/* The accent darkens in light mode because it is also used as text — gold on cream is unreadable —
+   and the button fill flips its label to near-white to keep contrast in the other direction. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f3ec;
+  --panel: #ffffff;
+  --panel-raised: #fffdf7;
+  --line: #e2dccd;
+  --line-strong: #cbc3b1;
+  --text: #1a1c22;
+  --text-soft: #2c3038;
+  --muted: #5b606d;
+  --text-faint: #6a6f7d;
+  --text-placeholder: #6a6f7d;
+  --input-bg: #fbf9f3;
+  --surface-sunken: #ece6d8;
+  --skeleton-base: #efe9dd;
+  --accent: #8a5b00;
+  --accent-deep: #6b4500;
+  --accent-soft: rgba(138, 91, 0, 0.1);
+  --on-accent: #fffdf7;
+  --danger: #b42318;
+  --danger-text: #8f1d16;
+  --ok: #157347;
+  --ok-text: #0f5c39;
+  --tint-faint: rgba(24, 22, 17, 0.028);
+  --tint-strong: rgba(24, 22, 17, 0.06);
+  --overlay: rgba(24, 22, 17, 0.42);
+  --shadow-strong: rgba(31, 27, 18, 0.16);
 }
 
 * {
@@ -32,6 +81,14 @@ body {
     var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+}
+
+/* The same two washes, dialled back: at these alphas the dark-theme glow reads as a stain on cream. */
+:root[data-theme="light"] body {
+  background:
+    radial-gradient(900px 500px at 15% -10%, rgba(242, 193, 78, 0.22), transparent 62%),
+    radial-gradient(700px 420px at 90% 0%, rgba(84, 124, 255, 0.07), transparent 55%),
+    var(--bg);
 }
 
 a {
@@ -167,12 +224,43 @@ main {
   color: var(--accent);
 }
 
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.theme-toggle:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: var(--panel-raised);
+}
+
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+
 /* ------------------------------------------------------------------ buttons */
 .button {
   appearance: none;
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #17130a;
+  color: var(--on-accent);
   border-radius: 10px;
   padding: 11px 19px;
   font-size: 0.92rem;
@@ -296,7 +384,7 @@ h1 {
 }
 
 .search-form input::placeholder {
-  color: #6b7486;
+  color: var(--text-faint);
 }
 
 .search-form input:focus-visible {
@@ -327,7 +415,7 @@ h1 {
   gap: 8px;
   margin-top: 14px;
   font-size: 0.8rem;
-  color: #6b7486;
+  color: var(--text-faint);
 }
 
 .quick-searches button {
@@ -342,7 +430,7 @@ h1 {
 
 .quick-searches button:hover {
   color: var(--text);
-  border-color: #3a4357;
+  border-color: var(--line-strong);
 }
 
 /* ------------------------------------------------------------------ results */
@@ -420,7 +508,7 @@ h1 {
 }
 
 .movie-card:hover {
-  border-color: #313a4d;
+  border-color: var(--line-strong);
 }
 
 .movie-card.is-busy {
@@ -470,7 +558,7 @@ h1 {
 
 .genre-list li {
   font-size: 0.7rem;
-  color: #8e97a8;
+  color: var(--text-faint);
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 2px 8px;
@@ -481,7 +569,7 @@ h1 {
   padding: 8px 11px;
   font-size: 0.82rem;
   line-height: 1.5;
-  color: #c7d0e0;
+  color: var(--text-soft);
   background: rgba(242, 193, 78, 0.055);
   border-left: 2px solid var(--accent);
   border-radius: 0 8px 8px 0;
@@ -536,7 +624,7 @@ h1 {
   bottom: 0;
   overflow: hidden;
   white-space: nowrap;
-  color: #343d4f;
+  color: var(--text-placeholder);
   pointer-events: none;
 }
 
@@ -579,7 +667,7 @@ h1 {
 .rating-value {
   min-width: 30px;
   font-size: 0.76rem;
-  color: #6f7889;
+  color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 
@@ -612,9 +700,9 @@ h1 {
   padding: 11px 15px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--tint-faint);
   font-size: 0.855rem;
-  color: #c9d2e1;
+  color: var(--text-soft);
 }
 
 .algo-arm {
@@ -719,7 +807,7 @@ h1 {
   padding: 11px 14px;
   border: 1px solid rgba(248, 113, 113, 0.32);
   background: rgba(248, 113, 113, 0.08);
-  color: #fecaca;
+  color: var(--danger-text);
   border-radius: 10px;
   font-size: 0.86rem;
   line-height: 1.5;
@@ -745,7 +833,7 @@ h1 {
   height: 12px;
   border-radius: 6px;
   width: 62%;
-  background: linear-gradient(90deg, #1a202c 25%, #232b3a 50%, #1a202c 75%);
+  background: linear-gradient(90deg, var(--skeleton-base) 25%, var(--surface-sunken) 50%, var(--skeleton-base) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
 }
@@ -788,7 +876,7 @@ h1 {
 .auth-tabs {
   display: inline-flex;
   gap: 3px;
-  background: #0c1017;
+  background: var(--surface-sunken);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 3px;
@@ -845,7 +933,7 @@ h1 {
 }
 
 .field input {
-  background: #0b0e14;
+  background: var(--input-bg);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 11px 13px;
@@ -854,7 +942,7 @@ h1 {
 }
 
 .field input::placeholder {
-  color: #5c6577;
+  color: var(--text-placeholder);
 }
 
 .field input:focus {
@@ -867,7 +955,7 @@ h1 {
   border-radius: 8px;
   background: rgba(248, 113, 113, 0.08);
   border: 1px solid rgba(248, 113, 113, 0.28);
-  color: #fca5a5;
+  color: var(--danger-text);
   font-size: 0.82rem;
   line-height: 1.5;
 }
@@ -923,7 +1011,7 @@ h1 {
   border-top: 1px solid var(--line);
   margin-top: 64px;
   padding-top: 22px;
-  color: #6f7889;
+  color: var(--text-faint);
   font-size: 0.76rem;
   line-height: 1.6;
 }
@@ -946,7 +1034,7 @@ h1 {
   margin: 26px 0 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: rgba(255, 255, 255, 0.016);
+  background: var(--tint-faint);
   overflow: hidden;
 }
 
@@ -972,7 +1060,7 @@ h1 {
 }
 
 .filter-toggle:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--tint-faint);
 }
 
 .filter-toggle-label {
@@ -1037,7 +1125,7 @@ h1 {
 
 .filter-placeholder {
   flex: 1;
-  color: #6f7889;
+  color: var(--text-faint);
   font-size: 0.8rem;
 }
 
@@ -1062,13 +1150,13 @@ h1 {
 
 .chip:hover {
   color: var(--text);
-  border-color: #3a4357;
+  border-color: var(--line-strong);
 }
 
 .chip[aria-pressed="true"] {
   background: var(--accent);
   border-color: var(--accent);
-  color: #17130a;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
@@ -1088,14 +1176,14 @@ h1 {
   padding: 7px 9px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #0b0e14;
+  background: var(--input-bg);
   color: var(--text);
   font-size: 0.82rem;
   font-variant-numeric: tabular-nums;
 }
 
 .year-range input::placeholder {
-  color: #5c6577;
+  color: var(--text-placeholder);
 }
 
 .year-range input:focus {
@@ -1103,7 +1191,7 @@ h1 {
 }
 
 .year-dash {
-  color: #5c6577;
+  color: var(--text-placeholder);
 }
 
 .score-range {
@@ -1121,7 +1209,7 @@ h1 {
 .score-output {
   min-width: 76px;
   font-size: 0.76rem;
-  color: #6f7889;
+  color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1132,7 +1220,7 @@ h1 {
 .filter-error {
   margin: 0;
   padding: 0 18px 14px;
-  color: #fca5a5;
+  color: var(--danger-text);
   font-size: 0.78rem;
 }
 
@@ -1144,7 +1232,7 @@ h1 {
   object-fit: cover;
   border-radius: 8px;
   border: 1px solid var(--line);
-  background: #0b0e14;
+  background: var(--input-bg);
 }
 
 .movie-title {
@@ -1177,11 +1265,11 @@ h1 {
   border-radius: 18px;
   background: linear-gradient(180deg, var(--panel-raised), var(--panel));
   color: var(--text);
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 30px 80px var(--shadow-strong);
 }
 
 .movie-dialog::backdrop {
-  background: rgba(4, 6, 10, 0.72);
+  background: var(--overlay);
   backdrop-filter: blur(3px);
 }
 
@@ -1223,7 +1311,7 @@ h1 {
 
 .dialog-close:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--tint-strong);
 }
 
 .dialog-head {
@@ -1240,7 +1328,7 @@ h1 {
   object-fit: cover;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: #0b0e14;
+  background: var(--input-bg);
 }
 
 .dialog-heading {
@@ -1261,7 +1349,7 @@ h1 {
 
 .dialog-text {
   margin: 18px 0 0;
-  color: #c7d0e0;
+  color: var(--text-soft);
   font-size: 0.9rem;
   line-height: 1.65;
 }
@@ -1285,7 +1373,7 @@ h1 {
 
 .dialog-attribution {
   margin: 16px 0 0;
-  color: #6f7889;
+  color: var(--text-faint);
   font-size: 0.7rem;
 }
 
@@ -1305,7 +1393,7 @@ h1 {
   font-size: 0.62rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: #6f7889;
+  color: var(--text-faint);
 }
 
 .evidence ul {
@@ -1324,11 +1412,11 @@ h1 {
   gap: 7px;
   font-size: 0.76rem;
   line-height: 1.4;
-  color: #aab4c5;
+  color: var(--text-soft);
 }
 
 .evidence-title {
-  color: #d6deea;
+  color: var(--text-soft);
 }
 
 .evidence-rating {
@@ -1337,7 +1425,7 @@ h1 {
 }
 
 .evidence-genres {
-  color: #6f7889;
+  color: var(--text-faint);
   font-size: 0.7rem;
 }
 
@@ -1358,7 +1446,7 @@ h1 {
   padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--tint-faint);
   font-size: 0.84rem;
 }
 
@@ -1376,7 +1464,7 @@ h1 {
 }
 
 .inline-select select {
-  background: #0b0e14;
+  background: var(--input-bg);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1385,7 +1473,7 @@ h1 {
 }
 
 .compare-summary {
-  color: #c9d2e1;
+  color: var(--text-soft);
 }
 
 .compare-summary strong {
@@ -1466,7 +1554,7 @@ h1 {
 }
 
 .compare-rank {
-  color: #5c6577;
+  color: var(--text-placeholder);
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
 }
@@ -1502,7 +1590,7 @@ h1 {
 .compare-footnote {
   margin: 14px 0 0;
   max-width: 92ch;
-  color: #6f7889;
+  color: var(--text-faint);
   font-size: 0.76rem;
   line-height: 1.6;
 }
@@ -1516,7 +1604,7 @@ h1 {
   padding: 11px 15px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--tint-faint);
   color: var(--muted);
   font-size: 0.82rem;
   font-variant-numeric: tabular-nums;
@@ -1573,7 +1661,7 @@ h1 {
 }
 
 .metrics-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--tint-faint);
 }
 
 .metrics-table .is-best {
@@ -1588,7 +1676,7 @@ h1 {
 
 .metric-dir {
   margin-left: 4px;
-  color: #6f7889;
+  color: var(--text-faint);
   font-size: 0.8em;
 }
 
@@ -1629,7 +1717,7 @@ h1 {
 
 .chart-note {
   margin: 4px 0 0;
-  color: #6f7889;
+  color: var(--text-faint);
   font-size: 0.72rem;
 }
 
@@ -1661,7 +1749,7 @@ h1 {
   height: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: #0b0e14;
+  background: var(--input-bg);
 }
 
 .chart-fill {
@@ -1676,7 +1764,7 @@ h1 {
 }
 
 .chart-value {
-  color: #c9d2e1;
+  color: var(--text-soft);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -1689,7 +1777,7 @@ h1 {
 .table-note {
   margin: 12px 2px 0;
   max-width: 92ch;
-  color: #6f7889;
+  color: var(--text-faint);
   font-size: 0.76rem;
   line-height: 1.6;
 }
@@ -1700,8 +1788,8 @@ h1 {
   padding: 9px 13px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #0b0e14;
-  color: #c9d2e1;
+  background: var(--input-bg);
+  color: var(--text-soft);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.8rem;
 }
@@ -1946,7 +2034,7 @@ h1 {
   border: 1px solid rgba(74, 222, 128, 0.32);
   border-radius: 10px;
   background: rgba(74, 222, 128, 0.07);
-  color: #d3ead9;
+  color: var(--ok-text);
   font-size: 0.86rem;
 }
 
@@ -1981,7 +2069,7 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: transparent;
-  color: #b9c2d2;
+  color: var(--text-soft);
   font: inherit;
   font-size: 0.72rem;
   cursor: pointer;
@@ -1989,20 +2077,20 @@ h1 {
 }
 
 .reaction:hover:not(:disabled) {
-  border-color: #4a5568;
+  border-color: var(--line-strong);
   color: #fff;
 }
 
 .reaction.is-positive:hover:not(:disabled) {
   border-color: rgba(74, 222, 128, 0.5);
   background: rgba(74, 222, 128, 0.08);
-  color: #9ef0b7;
+  color: var(--ok-text);
 }
 
 .reaction.is-negative:hover:not(:disabled) {
   border-color: rgba(248, 113, 113, 0.5);
   background: rgba(248, 113, 113, 0.07);
-  color: #ffb4b4;
+  color: var(--danger-text);
 }
 
 .reaction:disabled {
@@ -2023,13 +2111,13 @@ h1 {
   padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--tint-faint);
   font-size: 0.84rem;
 }
 
 .progress-copy {
   min-width: 110px;
-  color: #c9d2e1;
+  color: var(--text-soft);
 }
 
 .progress-copy strong {
@@ -2043,14 +2131,14 @@ h1 {
   height: 6px;
   overflow: hidden;
   border-radius: 999px;
-  background: #232b3a;
+  background: var(--surface-sunken);
 }
 
 .progress-track span {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #d8a83a, var(--accent));
+  background: linear-gradient(90deg, var(--accent-deep), var(--accent));
   transition: width 0.25s ease;
 }
 

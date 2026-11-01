@@ -107,6 +107,7 @@ uv run python scripts/precompute_recs.py --users 200 --limit 50
 | Search beyond the dataset | When the catalog returns fewer than five matches, TMDB is asked too; hits are labelled “Not in catalog” and can be added in one click |
 | New releases | Films newer than MovieLens are scored by content (genres, keywords, decade), badged “New”, and shown in their own row; a small decaying freshness bonus re-ranks them |
 | Cold start | Users with no usable signal get the popularity baseline plus an onboarding prompt |
+| Light / dark theme | One toggle in the header, remembered per browser. It follows the operating system until you choose, and the inline script in `index.html` applies the choice before the stylesheet paints, so there is no white flash on reload |
 | Password reset | A single-use, 30-minute link by email; redeeming it retires every session the account had open. Asking twice leaves only the newest link working |
 | Delete account | Password re-entry plus a typed confirmation; ratings, feedback, impressions and cached picks go with it, and the catalog is untouched |
 

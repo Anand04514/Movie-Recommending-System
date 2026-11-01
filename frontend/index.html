@@ -8,6 +8,25 @@
       content="Movie recommendations built on the MovieLens ml-32m dataset."
     />
     <title>Movie Recs</title>
+    <script>
+      // Set the theme before the stylesheet paints, so a dark-preferring reader never sees a white
+      // flash. Kept inline and dependency-free for exactly that reason.
+      (function () {
+        try {
+          var stored = localStorage.getItem("movie-recs.theme");
+          var prefersLight =
+            window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+          document.documentElement.dataset.theme =
+            stored === "light" || stored === "dark"
+              ? stored
+              : prefersLight
+                ? "light"
+                : "dark";
+        } catch (error) {
+          document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

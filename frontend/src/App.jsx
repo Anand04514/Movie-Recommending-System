@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import * as api from "./api.js";
+import ThemeToggle from "./components/ThemeToggle.jsx";
 import AccountPage from "./pages/AccountPage.jsx";
 import AccuracyPage from "./pages/AccuracyPage.jsx";
 import AuthPage from "./pages/AuthPage.jsx";
@@ -247,6 +248,7 @@ export default function App() {
               Sign in
             </button>
           )}
+          <ThemeToggle />
         </div>
       </header>
 
